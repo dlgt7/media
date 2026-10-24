@@ -33,6 +33,16 @@ public final class MpvLibrary {
     MediaLibraryInfo.registerModule("media3.mpvplayer");
   }
 
+  private static volatile Runnable customLoader;
+
+  /**
+   * Registers a custom loader (for example the installable mpv runtime module) invoked when the
+   * bundled native libraries are missing. Must be called before the first {@link #isAvailable()}.
+   */
+  public static void setLibraryLoader(Runnable loader) {
+    customLoader = loader;
+  }
+
   /**
    * Overrides the names of the mpv native libraries.
    *
@@ -47,6 +57,16 @@ public final class MpvLibrary {
 
   /** Returns whether the underlying native libraries are available, loading them if necessary. */
   public static boolean isAvailable() {
-    return LOADER.isAvailable();
+    if (LOADER.isAvailable()) return true;
+    Runnable loader = customLoader;
+    if (loader != null) {
+      try {
+        loader.run();
+      } catch (Throwable ignored) {
+        // The custom loader surfaces its own errors.
+      }
+      return LOADER.isAvailable();
+    }
+    return false;
   }
 }

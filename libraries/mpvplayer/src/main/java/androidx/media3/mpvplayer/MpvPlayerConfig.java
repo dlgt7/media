@@ -191,6 +191,45 @@ public final class MpvPlayerConfig {
       addString(options, name, value);
     }
 
+    @javax.annotation.Nullable
+    private androidx.media3.datasource.DataSource.Factory dataSourceFactory;
+
+    /** Sets the default font directories scanned for subtitle fonts. */
+    @CanIgnoreReturnValue
+    public Builder setDefaultFontDirectories(
+        java.io.File systemFontsDirectory, java.io.File userFontsDirectory) {
+      return addFontDirectory(checkNotNull(systemFontsDirectory))
+          .addFontDirectory(checkNotNull(userFontsDirectory));
+    }
+
+    /** Sets the data source factory used for network and file access. */
+    @CanIgnoreReturnValue
+    public Builder setDataSourceFactory(
+        androidx.media3.datasource.DataSource.Factory dataSourceFactory) {
+      this.dataSourceFactory = checkNotNull(dataSourceFactory);
+      return this;
+    }
+
+    private final java.util.List<java.io.File> fontDirectories = new java.util.ArrayList<>();
+
+    /** Adds a directory scanned for fonts. */
+    @CanIgnoreReturnValue
+    public Builder addFontDirectory(java.io.File fontDirectory) {
+      fontDirectories.add(checkNotNull(fontDirectory));
+      return this;
+    }
+
+    /** Returns the configured font directories. */
+    public java.util.List<java.io.File> getFontDirectories() {
+      return java.util.Collections.unmodifiableList(fontDirectories);
+    }
+
+    /** Returns the configured data source factory, or {@code null}. */
+    @javax.annotation.Nullable
+    public androidx.media3.datasource.DataSource.Factory getDataSourceFactory() {
+      return dataSourceFactory;
+    }
+
     @CanIgnoreReturnValue
     public Builder setDefaultUserAgent(@Nullable String defaultUserAgent) {
       checkState(!buildCalled);
