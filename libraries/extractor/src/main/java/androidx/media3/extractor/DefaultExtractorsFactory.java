@@ -178,6 +178,8 @@ public final class DefaultExtractorsFactory implements ExtractorsFactory {
   private @C.VideoCodecFlags int codecsToParseWithinGopSampleDependencies;
   private @JpegExtractor.Flags int jpegFlags;
   private @HeifExtractor.Flags int heifFlags;
+  private @MatroskaExtractor.Flags int matroskaHttpFlags;
+  private String mp4ClearKeyLicense;
 
   public DefaultExtractorsFactory() {
     tsMode = TsExtractor.MODE_SINGLE_PMT;
@@ -185,6 +187,7 @@ public final class DefaultExtractorsFactory implements ExtractorsFactory {
     subtitleParserFactory = DefaultSubtitleParserFactory.createForExtraction();
     textTrackTranscodingEnabled = true;
     codecsToParseWithinGopSampleDependencies = C.VIDEO_CODEC_FLAG_H264 | C.VIDEO_CODEC_FLAG_H265;
+    mp4ClearKeyLicense = "";
   }
 
   /**
@@ -397,6 +400,33 @@ public final class DefaultExtractorsFactory implements ExtractorsFactory {
   public synchronized DefaultExtractorsFactory setTsExtractorTimestampSearchBytes(
       int timestampSearchBytes) {
     tsTimestampSearchBytes = timestampSearchBytes;
+    return this;
+  }
+
+  /**
+   * Sets additional {@link MatroskaExtractor} flags that apply to HTTP sources only, for example
+   * {@link MatroskaExtractor#FLAG_DEFER_SEEK_FOR_CUES}.
+   *
+   * @param flags The flags to apply to Matroska streams served over HTTP(S).
+   * @return The factory, for convenience.
+   */
+  @CanIgnoreReturnValue
+  public synchronized DefaultExtractorsFactory setMatroskaExtractorFlagsForHttpSources(
+      @MatroskaExtractor.Flags int flags) {
+    matroskaHttpFlags = flags;
+    return this;
+  }
+
+  /**
+   * Sets a ClearKey license body (JSON) used to decrypt MP4 streams locally. When the license
+   * carries keys, MP4 sample decryption is performed by the extractor without a DRM session.
+   *
+   * @param licenseJson The ClearKey license JSON, or an empty string to disable local keys.
+   * @return The factory, for convenience.
+   */
+  @CanIgnoreReturnValue
+  public synchronized DefaultExtractorsFactory setMp4ClearKeys(String licenseJson) {
+    mp4ClearKeyLicense = licenseJson == null ? "" : licenseJson;
     return this;
   }
 
