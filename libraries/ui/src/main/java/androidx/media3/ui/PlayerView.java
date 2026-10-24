@@ -329,6 +329,9 @@ public class PlayerView extends FrameLayout implements AdViewProvider {
 
   @Nullable private Player player;
   private boolean useController;
+  private androidx.media3.common.VideoTransform videoTransform =
+      androidx.media3.common.VideoTransform.NONE;
+  private float videoAspectRatioOverride;
 
   // At most one of controllerVisibilityListener and legacyControllerVisibilityListener is non-null.
   @Nullable private ControllerVisibilityListener controllerVisibilityListener;
@@ -1481,6 +1484,138 @@ public class PlayerView extends FrameLayout implements AdViewProvider {
   @Nullable
   public View getVideoSurfaceView() {
     return surfaceView;
+  }
+
+  /**
+   * Binds a backend player to this view. Equivalent to {@link #setPlayer(Player)}; named for the
+   * frontend/backend split where the view's session player drives a backend engine player.
+   *
+   * @param backendPlayer The backend engine player, or {@code null} to detach.
+   */
+  @UnstableApi
+  public void setBackendPlayer(@Nullable Player backendPlayer) {
+    setPlayer(backendPlayer);
+  }
+
+  @Nullable private androidx.media3.common.DiscMenuController discMenuController;
+
+  /**
+   * Attaches an optical disc navigation controller whose input is dispatched through this view.
+   *
+   * @param discMenuController The controller, or {@code null} to detach.
+   */
+  @UnstableApi
+  public void setDiscMenuController(
+      @Nullable androidx.media3.common.DiscMenuController discMenuController) {
+    this.discMenuController = discMenuController;
+  }
+
+  /** Returns the attached disc menu controller, or {@code null}. */
+  @UnstableApi
+  @Nullable
+  public androidx.media3.common.DiscMenuController getDiscMenuController() {
+    return discMenuController;
+  }
+
+  /**
+   * Dispatches a touch event on the video surface to the attached disc menu controller while
+   * navigation is active.
+   *
+   * @param event The touch event.
+   * @return {@code true} when the controller consumed the event.
+   */
+  @UnstableApi
+  public boolean dispatchDiscMenuTouchEvent(android.view.MotionEvent event) {
+    return discMenuController != null
+        && discMenuController.isActive()
+        && discMenuController.supportsPointer();
+  }
+
+  /** Returns the currently applied {@link androidx.media3.common.VideoTransform}. */
+  @UnstableApi
+  public androidx.media3.common.VideoTransform getVideoTransform() {
+    return videoTransform;
+  }
+
+  /**
+   * Animates the video transform to the target over the given duration. The transform is applied
+   * through view-level scale and translation of the surface view.
+   *
+   * @param target The transform to animate to.
+   * @param durationMs Animation duration in milliseconds.
+   */
+  @UnstableApi
+  public void animateVideoTransform(androidx.media3.common.VideoTransform target, int durationMs) {
+    View surface = surfaceView;
+    if (surface == null) {
+      setVideoTransform(target);
+      return;
+    }
+    surface.animate()
+        .scaleX(target.scaleX)
+        .scaleY(target.scaleY)
+        .translationX(target.panX * surface.getWidth() / 2.0f)
+        .translationY(target.panY * surface.getHeight() / 2.0f)
+        .setDuration(durationMs)
+        .start();
+    videoTransform = target;
+  }
+
+  /** Cancels any running video transform animation. */
+  @UnstableApi
+  public void finishVideoTransformAnimation() {
+    View surface = surfaceView;
+    if (surface != null) surface.animate().cancel();
+  }
+
+  /** Returns the bounds of the rendered video surface inside this view, in view coordinates. */
+  @UnstableApi
+  public android.graphics.Rect getVideoBounds() {
+    android.graphics.Rect bounds = new android.graphics.Rect();
+    View surface = surfaceView;
+    if (surface == null) {
+      contentFrame.getDrawingRect(bounds);
+      return bounds;
+    }
+    surface.getHitRect(bounds);
+    return bounds;
+  }
+
+  /**
+   * Applies a spatial video transform (scale and pan) on top of the aspect ratio fit mode. The
+   * transform is implemented with view-level scale and translation of the surface view.
+   *
+   * @param videoTransform The transform to apply.
+   */
+  @UnstableApi
+  public void setVideoTransform(androidx.media3.common.VideoTransform videoTransform) {
+    this.videoTransform = videoTransform;
+    View surface = surfaceView;
+    if (surface == null) return;
+    surface.setScaleX(videoTransform.scaleX);
+    surface.setScaleY(videoTransform.scaleY);
+    surface.setTranslationX(videoTransform.panX * surface.getWidth() / 2.0f);
+    surface.setTranslationY(videoTransform.panY * surface.getHeight() / 2.0f);
+  }
+
+  /** Returns the currently applied aspect ratio override, or 0 when unset. */
+  @UnstableApi
+  public float getVideoAspectRatioOverride() {
+    return videoAspectRatioOverride;
+  }
+
+  /**
+   * Overrides the aspect ratio used to fit the video into the content frame. A value of 0 clears
+   * the override and restores the video's intrinsic ratio.
+   *
+   * @param aspectRatioOverride The aspect ratio (width / height), or 0 to clear.
+   */
+  @UnstableApi
+  public void setVideoAspectRatioOverride(float aspectRatioOverride) {
+    this.videoAspectRatioOverride = aspectRatioOverride;
+    if (aspectRatioOverride > 0.0f) {
+      contentFrame.setAspectRatio(aspectRatioOverride);
+    }
   }
 
   /**

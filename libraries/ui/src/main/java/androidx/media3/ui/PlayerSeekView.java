@@ -174,6 +174,26 @@ public class PlayerSeekView extends FrameLayout
   }
 
   /** Returns the bound {@link TimeBar}. */
+  private java.util.function.LongSupplier durationSupplier;
+
+  /**
+   * Supplies the duration shown by the seek bar, overriding the player duration. Used when the
+   * UI presents an adjusted timeline (for example web playback).
+   *
+   * @param durationSupplier Supplies the duration in milliseconds, or {@code C.TIME_UNSET}.
+   */
+  @UnstableApi
+  public void setDurationSupplier(java.util.function.LongSupplier durationSupplier) {
+    this.durationSupplier = durationSupplier;
+  }
+
+  /** Returns the duration supplier, or {@code null} when the player duration is used. */
+  @UnstableApi
+  @Nullable
+  public java.util.function.LongSupplier getDurationSupplier() {
+    return durationSupplier;
+  }
+
   public TimeBar getTimeBar() {
     return timeBar;
   }

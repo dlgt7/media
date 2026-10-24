@@ -45,6 +45,8 @@ import java.util.List;
 @UnstableApi
 public final class SubtitleView extends FrameLayout {
 
+  private float bitmapSubtitleBrightness = 1.0f;
+
   /**
    * An output for displaying subtitles.
    *
@@ -392,6 +394,23 @@ public final class SubtitleView extends FrameLayout {
    *
    * @param bottomPaddingFraction The bottom padding fraction.
    */
+  /**
+   * Sets the brightness multiplier applied to bitmap (PGS) subtitles, 1.0f leaving them
+   * unchanged.
+   *
+   * @param brightness The brightness multiplier.
+   */
+  @UnstableApi
+  public void setBitmapSubtitleBrightness(float brightness) {
+    this.bitmapSubtitleBrightness = brightness;
+  }
+
+  /** Returns the brightness multiplier applied to bitmap subtitles. */
+  @UnstableApi
+  public float getBitmapSubtitleBrightness() {
+    return bitmapSubtitleBrightness;
+  }
+
   public void setBottomPaddingFraction(float bottomPaddingFraction) {
     this.bottomPaddingFraction = bottomPaddingFraction;
     updateOutput();
