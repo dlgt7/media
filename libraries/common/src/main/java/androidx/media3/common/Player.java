@@ -882,6 +882,15 @@ public interface Player {
     default void onEvents(Player player, Events events) {}
 
     /**
+     * Called when the state of the optical disc navigation session changes, for example when a
+     * disc image starts mounting or the interactive menu becomes active.
+     *
+     * @param state The new {@link androidx.media3.common.DiscMenuState}.
+     */
+    @UnstableApi
+    default void onDiscMenuStateChanged(androidx.media3.common.DiscMenuState state) {}
+
+    /**
      * Called when the value of {@link Player#getCurrentTimeline()} changes.
      *
      * <p>Note that the current {@link MediaItem} or playback position may change as a result of a
@@ -1770,6 +1779,12 @@ public interface Player {
 
   /** {@link #getCurrentMediaEditions()} changed. */
   @UnstableApi int EVENT_MEDIA_EDITIONS_CHANGED = 32;
+
+  /**
+   * {@link #onDiscMenuStateChanged(DiscMenuState)} event: the optical disc navigation state
+   * changed.
+   */
+  @UnstableApi int EVENT_DISC_MENU_STATE_CHANGED = 33;
 
   /**
    * Commands that indicate which method calls are currently permitted on a particular {@code
@@ -3495,6 +3510,30 @@ public interface Player {
   @UnstableApi
   default long getTextOffsetMs() {
     throw new UnsupportedOperationException();
+  }
+
+  /**
+   * Returns the subtitle timing offsets currently applied to the primary and secondary subtitle
+   * renderers.
+   */
+  @UnstableApi
+  default androidx.media3.common.text.SubtitleOffsets getSubtitleOffsets() {
+    return androidx.media3.common.text.SubtitleOffsets.ZERO;
+  }
+
+  /**
+   * Sets the subtitle timing offsets applied to the primary and secondary subtitle renderers.
+   *
+   * <p>This method must only be called if {@link #COMMAND_GET_TEXT} is {@linkplain
+   * #getAvailableCommands() available}.
+   */
+  @UnstableApi
+  default void setSubtitleOffsets(androidx.media3.common.text.SubtitleOffsets offsets) {}
+
+  /** Returns the state of the optical disc navigation session attached to this player. */
+  @UnstableApi
+  default androidx.media3.common.DiscMenuState getDiscMenuState() {
+    return androidx.media3.common.DiscMenuState.IDLE;
   }
 
   /**
