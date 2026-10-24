@@ -132,6 +132,12 @@ public class MatroskaExtractor implements Extractor {
   public static final int FLAG_EMIT_RAW_SUBTITLE_DATA = 1 << 1; // 2
 
   /**
+   * Enables seeking for cues to be deferred for HTTP sources until the seek position is known to
+   * require them, reducing cue loading on slow connections.
+   */
+  public static final int FLAG_DEFER_SEEK_FOR_CUES = 1 << 2; // 4
+
+  /**
    * @deprecated Use {@link #newFactory(SubtitleParser.Factory)} instead.
    */
   @Deprecated
