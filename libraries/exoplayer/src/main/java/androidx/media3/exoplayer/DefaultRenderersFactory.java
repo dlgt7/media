@@ -131,6 +131,8 @@ public class DefaultRenderersFactory implements RenderersFactory {
   private boolean enableMediaCodecBufferDecodeOnlyFlag;
   private boolean enableMediaCodecVideoRendererDurationToProgressUs;
   private @DolbyVisionOutputPolicy.Mode int dolbyVisionOutputPolicy;
+  @androidx.annotation.Nullable private DecoderManager decoderManager;
+  private boolean enableSurfaceControlFrameRetention;
 
   /**
    * @param context A {@link Context}.
@@ -236,6 +238,40 @@ public class DefaultRenderersFactory implements RenderersFactory {
       @DolbyVisionOutputPolicy.Mode int dolbyVisionOutputPolicy) {
     this.dolbyVisionOutputPolicy = dolbyVisionOutputPolicy;
     return this;
+  }
+
+  /**
+   * Attaches a {@link DecoderManager} that owns the audio and video decoder selection. The
+   * manager coordinates with the {@code DecodeTrackSelector} created for the player.
+   *
+   * @param decoderManager The manager to attach, or {@code null} to detach.
+   * @return This factory, for convenience.
+   */
+  @CanIgnoreReturnValue
+  public final DefaultRenderersFactory setDecoderManager(
+      @androidx.annotation.Nullable DecoderManager decoderManager) {
+    this.decoderManager = decoderManager;
+    return this;
+  }
+
+  /**
+   * Sets whether to retain the most recent output surface buffers using SurfaceControl frame
+   * retention. Useful when the surface is shared between players.
+   *
+   * @param enableSurfaceControlFrameRetention Whether to enable frame retention.
+   * @return This factory, for convenience.
+   */
+  @CanIgnoreReturnValue
+  public final DefaultRenderersFactory setEnableSurfaceControlFrameRetention(
+      boolean enableSurfaceControlFrameRetention) {
+    this.enableSurfaceControlFrameRetention = enableSurfaceControlFrameRetention;
+    return this;
+  }
+
+  /** Returns the attached {@link DecoderManager}, or {@code null}. */
+  @androidx.annotation.Nullable
+  public final DecoderManager getDecoderManager() {
+    return decoderManager;
   }
 
   /**
