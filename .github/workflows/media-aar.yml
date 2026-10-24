@@ -42,6 +42,7 @@ jobs:
       # 与 TV 仓库 app/libs 的 lib-*.aar 约定完全一致
       - name: Build AARs
         run: >
+          chmod +x gradlew &&
           ./gradlew --stacktrace
           :lib-common:assembleRelease
           :lib-database:assembleRelease
