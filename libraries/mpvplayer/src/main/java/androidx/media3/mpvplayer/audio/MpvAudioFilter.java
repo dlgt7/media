@@ -161,7 +161,16 @@ public final class MpvAudioFilter {
           compressor(target, "0.250", "1.40", "1.00", "0.00"));
     }
 
+    /** Adds a dynamic range normalization filter (af=dynamic-normalization). */
     @CanIgnoreReturnValue
+    public Builder addDynamicNormalization(String id, double targetGain, double margin) {
+      checkState(!buildCalled);
+      String target = target("dynamic-normalization", id);
+      return addFilter(
+          target + "=target_gain=" + decimal(targetGain, 1) + ":margin=" + decimal(margin, 1),
+          target + "=target_gain=0.0:margin=0.0");
+    }
+
     public Builder addLoudnessNormalization(
         String id, double integratedLoudness, double loudnessRange, double truePeak) {
       checkState(!buildCalled);
