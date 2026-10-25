@@ -1,45 +1,112 @@
+/*
+ * Copyright (C) 2026 The Android Open Source Project
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 package androidx.media3.effect;
 
+import android.content.Context;
+import android.opengl.GLES20;
+import androidx.media3.common.VideoFrameProcessingException;
+import androidx.media3.common.util.GlProgram;
+import androidx.media3.common.util.GlUtil;
+import androidx.media3.common.util.Size;
 import androidx.media3.common.util.UnstableApi;
+import java.io.IOException;
 
 /**
- * Detail adjustment effect (sharpening and shadow lift) driven by a {@link VideoAdjustment}.
+ * Applies the detail related parts of a {@link VideoAdjustment} (edge-aware sharpening and shadow
+ * lifting) to each frame.
  *
- * <p>True unsharp masking requires convolution, which the RGB matrix pipeline cannot express.
- * This implementation therefore contributes an identity matrix and reports itself as a no-op
- * unless the pipeline provides a convolution path; the surrounding effect chain keeps working
- * because the color effect carries the visible adjustments.
+ * <p>This effect does not support HDR input; using it with HDR frames throws a {@link
+ * VideoFrameProcessingException}.
  */
 @UnstableApi
-public final class DetailAdjustEffect implements RgbMatrix {
+public final class DetailAdjustEffect implements GlEffect {
 
-  private static final float[] IDENTITY =
-      new float[] {
-        1.0f, 0.0f, 0.0f, 0.0f,
-        0.0f, 1.0f, 0.0f, 0.0f,
-        0.0f, 0.0f, 1.0f, 0.0f,
-        0.0f, 0.0f, 0.0f, 1.0f
-      };
+  private volatile VideoAdjustment adjustment;
 
-  private VideoAdjustment adjustment;
-
+  /** Creates an effect with the identity {@link VideoAdjustment#DEFAULT adjustment}. */
   public DetailAdjustEffect() {
-    this.adjustment =
-        new VideoAdjustment.Builder().setSharpness(0.0f).setShadowLift(0.0f).build();
+    this.adjustment = VideoAdjustment.DEFAULT;
   }
 
-  /** Updates the adjustment. */
+  /** Sets the adjustment to apply, replacing any previous configuration. */
   public void setAdjustment(VideoAdjustment adjustment) {
     this.adjustment = adjustment;
   }
 
   @Override
-  public float[] getMatrix(long presentationTimeUs, boolean useHdr) {
-    return IDENTITY;
+  public boolean isNoOp(int inputWidth, int inputHeight) {
+    return adjustment.isDetailNoOp();
   }
 
   @Override
-  public boolean isNoOp(int inputWidth, int inputHeight) {
-    return adjustment.sharpness == 0.0f && adjustment.shadowLift == 0.0f;
+  public GlShaderProgram toGlShaderProgram(Context context, boolean useHdr)
+      throws VideoFrameProcessingException {
+    return new DetailShaderProgram(context, useHdr);
+  }
+
+  private final class DetailShaderProgram extends BaseGlShaderProgram {
+
+    private final GlProgram glProgram;
+
+    public DetailShaderProgram(Context context, boolean useHdr)
+        throws VideoFrameProcessingException {
+      super(/* useHighPrecisionColorComponents= */ useHdr, /* texturePoolCapacity= */ 1);
+      if (useHdr) {
+        throw new VideoFrameProcessingException("Video adjustment does not support HDR");
+      }
+      try {
+        glProgram =
+            new GlProgram(
+                context,
+                /* vertexShaderResId= */ R.raw.vertex_shader_video_adjustment_es2,
+                /* fragmentShaderResId= */ R.raw.fragment_shader_detail_adjustment_es2);
+      } catch (IOException | GlUtil.GlException e) {
+        throw new VideoFrameProcessingException(e);
+      }
+      glProgram.setBufferAttribute(
+          "aFramePosition",
+          GlUtil.getNormalizedCoordinateBounds(),
+          GlUtil.HOMOGENEOUS_COORDINATE_VECTOR_SIZE);
+      float[] identityMatrix = GlUtil.create4x4IdentityMatrix();
+      glProgram.setFloatsUniform("uTransformationMatrix", identityMatrix);
+      glProgram.setFloatsUniform("uTexTransformationMatrix", identityMatrix);
+    }
+
+    @Override
+    public Size configure(int inputWidth, int inputHeight) {
+      glProgram.setFloatsUniform("uTexelSize", new float[] {1.0f / inputWidth, 1.0f / inputHeight});
+      return new Size(inputWidth, inputHeight);
+    }
+
+    @Override
+    public void drawFrame(int inputTexId, long presentationTimeUs)
+        throws VideoFrameProcessingException {
+      VideoAdjustment current = adjustment;
+      try {
+        glProgram.use();
+        glProgram.setFloatUniform("uSharpness", current.getSharpness());
+        glProgram.setFloatUniform("uThreshold", current.getThreshold());
+        glProgram.setFloatUniform("uShadowLift", current.getShadowLift());
+        glProgram.setSamplerTexIdUniform("uTexSampler", inputTexId, /* texUnitIndex= */ 0);
+        glProgram.bindAttributesAndUniforms();
+        // The four-vertex triangle strip forms a quad.
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, /* first= */ 0, /* count= */ 4);
+      } catch (GlUtil.GlException e) {
+        throw new VideoFrameProcessingException(e, presentationTimeUs);
+      }
+    }
   }
 }
