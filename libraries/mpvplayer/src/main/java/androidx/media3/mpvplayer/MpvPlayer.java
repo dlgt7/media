@@ -20,6 +20,7 @@ import static com.google.common.base.Preconditions.checkState;
 import static java.lang.annotation.ElementType.TYPE_USE;
 
 import android.content.Context;
+import android.net.Uri;
 import android.os.Handler;
 import android.os.Looper;
 import android.view.Display;
@@ -28,6 +29,15 @@ import androidx.annotation.IntDef;
 import androidx.annotation.Nullable;
 import androidx.media3.common.AudioAttributes;
 import androidx.media3.common.C;
+import androidx.media3.datasource.DataSource;
+import androidx.media3.common.text.SubtitleSelectionState;
+import androidx.media3.common.text.SubtitleOffsets;
+import androidx.media3.common.text.SubtitleContent;
+import androidx.media3.common.TrackSelectionOverride;
+import androidx.media3.common.DiscMenuController;
+import androidx.media3.common.DiscMenuHighlight;
+import androidx.media3.common.DiscMenuState;
+import androidx.media3.common.DiscMenuOverlay;
 import androidx.media3.common.Format;
 import androidx.media3.common.MediaChapter;
 import androidx.media3.common.MediaEdition;
@@ -73,21 +83,11 @@ import java.lang.annotation.Documented;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
+import java.io.IOException;
 import java.util.List;
+import java.util.function.Consumer;
 
-public final class MpvPlayer extends SimpleBasePlayer
-    implements androidx.media3.common.DiscMenuController {
-
-  @Override
-  public androidx.media3.common.DiscMenuState getDiscMenuState() {
-    return androidx.media3.common.DiscMenuState.IDLE;
-  }
-
-  @Override
-  public boolean open(String action, java.util.function.Consumer<androidx.media3.common.DiscMenuController.OpenResult> callback) {
-    callback.accept(androidx.media3.common.DiscMenuController.OpenResult.UNAVAILABLE);
-    return true;
-  }
+public final class MpvPlayer extends SimpleBasePlayer implements DiscMenuController {
 
   /** No audio output is currently initialized. */
   public static final int AUDIO_EFFECTS_UNAVAILABLE = 0;
@@ -140,6 +140,20 @@ public final class MpvPlayer extends SimpleBasePlayer
   private final MpvPlaybackProperties playbackProperties;
   private final MpvEffectController effectController;
   private final MpvCommandDispatcher commandDispatcher;
+
+  @Nullable private androidx.media3.mpvplayer.MpvSubtitleContentLoader subtitleContentLoader;
+  @Nullable private MpvDecoderMode videoDecoderMode;
+  @Nullable private DataSource.Factory discDataSourceFactory;
+  @Nullable private LogListener logListener;
+  private final java.util.Map<String, String> scriptData = new java.util.HashMap<>();
+  private final java.util.Map<Long, ScriptLoadCallback> pendingScriptLoads = new java.util.HashMap<>();
+  private long nextScriptClientId;
+  @Nullable private SubtitleOffsets subtitleOffsets;
+  @Nullable private TrackSelectionOverride primarySubtitleSelection;
+  @Nullable private TrackSelectionOverride secondarySubtitleSelection;
+  private boolean subtitleContentEnabled = true;
+  private boolean secondaryTextAutoSelection = true;
+  private boolean verboseLoggingEnabled;
   private final MpvSurfaceController surfaceController;
   private final MpvAudioFocusManager audioFocusManager;
   private final MpvTrackController trackController;
@@ -163,13 +177,20 @@ public final class MpvPlayer extends SimpleBasePlayer
   private boolean handlingPlayerCommand;
 
   private MpvPlayer(
-      Context context, MpvPlayerConfig config, @C.DecodeMode int decode, Looper looper) {
+      Context context,
+      MpvPlayerConfig config,
+      @C.DecodeMode int decode,
+      Looper looper,
+      @Nullable MpvDecoderMode videoDecoderMode,
+      @Nullable DataSource.Factory discDataSourceFactory) {
     super(looper);
     this.applicationContext = context.getApplicationContext();
     this.handler = Util.createHandler(getApplicationLooper(), null);
     MpvPlayerComponents components =
         MpvPlayerComponents.create(this.applicationContext, this, config, this.handler);
     this.errorFactory = components.errorFactory;
+    this.videoDecoderMode = videoDecoderMode;
+    this.discDataSourceFactory = discDataSourceFactory;
     this.options = components.options;
     this.playbackProperties = components.playbackProperties;
     this.effectController = components.effectController;
@@ -270,189 +291,6 @@ public final class MpvPlayer extends SimpleBasePlayer
       applyRuntimeDolbyVisionOutputMode();
     }
   }
-
-  /** Sets the video decoder selection mode for the mpv engine. */
-  public void setVideoDecoderMode(MpvDecoderMode decoderMode) {
-    checkNotNull(decoderMode);
-    this.videoDecoderModeState = decoderMode;
-    boolean software =
-        decoderMode == MpvDecoderMode.SOFTWARE || decoderMode == MpvDecoderMode.FFMPEG;
-    runOnPlayerLooper(() -> setDecodeInternal(software ? C.DECODE_SOFTWARE : C.DECODE_HARDWARE));
-  }
-
-  private volatile @Nullable MpvSubtitleContentLoader subtitleContentLoader;
-
-  /** Registers the loader used to fetch external subtitle transcript content. */
-  public void setSubtitleContentLoader(@Nullable MpvSubtitleContentLoader loader) {
-    this.subtitleContentLoader = loader;
-  }
-
-  /** Returns the registered subtitle content loader, or {@code null}. */
-  @Nullable
-  public MpvSubtitleContentLoader getSubtitleContentLoader() {
-    return subtitleContentLoader;
-  }
-
-  /** Callback receiving native mpv log messages. */
-  public interface LogListener {
-    /** Called for every log message at or above the subscribed level. */
-    void onLogMessage(String prefix, int level, String text);
-  }
-
-  private volatile @Nullable LogListener logListener;
-
-  /** Subscribes to native log messages at the given level, or clears the subscription. */
-  public void setLogListener(int level, @Nullable LogListener listener) {
-    this.logListener = listener;
-  }
-
-  private volatile boolean verboseLoggingEnabled;
-
-  /** Enables or disables verbose native logging. */
-  public void setVerboseLoggingEnabled(boolean enabled) {
-    this.verboseLoggingEnabled = enabled;
-  }
-
-  private volatile java.util.List<java.io.File> startupScripts = java.util.Collections.emptyList();
-
-  /**
-   * Replaces the Lua scripts loaded at mpv startup.
-   *
-   * @return {@code false} when the script engine is unavailable in this build.
-   */
-  public boolean setStartupScripts(java.util.List<java.io.File> scripts) {
-    this.startupScripts = java.util.Collections.unmodifiableList(new java.util.ArrayList<>(scripts));
-    return !scripts.isEmpty();
-  }
-
-  /** Returns the files registered as startup scripts. */
-  public java.util.List<java.io.File> getStartupScripts() {
-    return startupScripts;
-  }
-
-  private final java.util.concurrent.atomic.AtomicLong nextClientId = new java.util.concurrent.atomic.AtomicLong();
-
-  /** Shared script data store keyed by mpv user-data properties. */
-  private final java.util.Map<String, String> scriptData = new java.util.concurrent.ConcurrentHashMap<>();
-
-  /**
-   * Loads a Lua script at runtime.
-   *
-   * @param path Absolute path of the script file.
-   * @param onLoaded Invoked with the success flag and the client id used to unload the script.
-   * @return {@code false} when the script engine is unavailable and nothing was attempted.
-   */
-  public boolean loadScript(String path, java.util.function.BiConsumer<Boolean, Long> onLoaded) {
-    long clientId = nextClientId.incrementAndGet();
-    onLoaded.accept(Boolean.TRUE, clientId);
-    return true;
-  }
-
-  /** Unloads a previously loaded script. */
-  public void unloadScript(long clientId) {}
-
-  /** Returns the script data stored under the given key, or {@code null}. */
-  @Nullable
-  public String getScriptData(String key) {
-    return scriptData.get(key);
-  }
-
-  /** Stores script data under the given key. */
-  public void putScriptData(String key, @Nullable String value) {
-    if (value == null) scriptData.remove(key);
-    else scriptData.put(key, value);
-  }
-
-  /** Returns the input bindings registered by loaded scripts as a JSON array, or {@code null}. */
-  @Nullable
-  public String getInputBindings() {
-    return null;
-  }
-
-  /** Triggers the input binding registered under the given name. */
-  public boolean runScriptBinding(String binding) {
-    return false;
-  }
-
-  /** Returns the current video decoder selection. */
-  public MpvDecoderMode getVideoDecoderMode() {
-    return videoDecoderModeState;
-  }
-
-  private volatile MpvDecoderMode videoDecoderModeState = MpvDecoderMode.AUTO;
-
-  private volatile @Nullable androidx.media3.datasource.DataSource.Factory dataSourceFactory;
-  private volatile @Nullable androidx.media3.datasource.DataSource.Factory discDataSourceFactory;
-
-  /** Sets the data source factory used for network and file access. */
-  public void setDataSourceFactory(androidx.media3.datasource.DataSource.Factory factory) {
-    this.dataSourceFactory = factory;
-  }
-
-  /** Returns the data source factory used for network and file access, or {@code null}. */
-  @Nullable
-  public androidx.media3.datasource.DataSource.Factory getDataSourceFactory() {
-    return dataSourceFactory;
-  }
-
-  /** Sets the data source factory used to open optical disc images. */
-  public void setDiscDataSourceFactory(androidx.media3.datasource.DataSource.Factory factory) {
-    this.discDataSourceFactory = factory;
-  }
-
-  /** Returns the data source factory used to open optical disc images, or {@code null}. */
-  @Nullable
-  public androidx.media3.datasource.DataSource.Factory getDiscDataSourceFactory() {
-    return discDataSourceFactory;
-  }
-
-  /** Sets the secondary subtitle selection override, or {@code null} to clear it. */
-  public void setSecondaryTextTrackSelectionOverride(
-      @Nullable androidx.media3.common.TrackSelectionOverride selection) {
-    this.secondaryTextTrackSelection = selection;
-  }
-
-  /** Clears the secondary subtitle selection. */
-  public void resetSecondaryTextTrackSelection() {
-    this.secondaryTextTrackSelection = null;
-  }
-
-  private volatile boolean secondaryTextTrackAutoSelectionEnabled;
-  private volatile @Nullable androidx.media3.common.TrackSelectionOverride secondaryTextTrackSelection;
-
-  /** Enables or disables automatic selection of a secondary subtitle track. */
-  public void setSecondaryTextTrackAutoSelectionEnabled(boolean enabled) {
-    this.secondaryTextTrackAutoSelectionEnabled = enabled;
-  }
-
-  /** Returns the current dual-subtitle selection state. */
-  public androidx.media3.common.text.SubtitleSelectionState getSubtitleSelectionState() {
-    return new androidx.media3.common.text.SubtitleSelectionState(
-        /* primarySelection= */ null,
-        secondaryTextTrackSelection,
-        java.util.Collections.emptyList(),
-        secondaryTextTrackSelection,
-        /* secondaryPromotedToPrimary= */ false);
-  }
-
-  /** Returns the transcript content of the given subtitle selection. */
-  public androidx.media3.common.text.SubtitleContent getSubtitleContentForSelection(
-      androidx.media3.common.TrackSelectionOverride selection) {
-    MpvSubtitleContentLoader loader = subtitleContentLoader;
-    if (loader == null) return androidx.media3.common.text.SubtitleContent.UNSUPPORTED;
-    return androidx.media3.common.text.SubtitleContent.UNSUPPORTED;
-  }
-
-  /** Enables or disables transcript content retrieval. */
-  public void setSubtitleContentEnabled(boolean enabled) {}
-
-  /** Returns whether a failed transcript load can be retried for the given format. */
-  public boolean canRetrySubtitleContent(androidx.media3.common.Format format) {
-    return false;
-  }
-
-  /** Retries a failed transcript load for the given format. */
-  public void retrySubtitleContent(androidx.media3.common.Format format) {}
 
   public void setSubtitleOptions(MpvSubtitleOptions subtitleOptions) {
     MpvPlayerConfig config =
@@ -1063,31 +901,14 @@ public final class MpvPlayer extends SimpleBasePlayer
     private MpvPlayerConfig config;
     private Looper looper;
     private @C.DecodeMode int decode;
-    private MpvDecoderMode videoDecoderMode = MpvDecoderMode.AUTO;
+    @Nullable private MpvDecoderMode videoDecoderMode;
+    @Nullable private DataSource.Factory discDataSourceFactory;
     private boolean buildCalled;
 
     public Builder(Context context) {
       this.context = checkNotNull(context).getApplicationContext();
       this.config = new MpvPlayerConfig.Builder().build();
       this.looper = Looper.getMainLooper();
-    }
-
-    @CanIgnoreReturnValue
-    public Builder setVideoDecoderMode(MpvDecoderMode videoDecoderMode) {
-      checkState(!buildCalled);
-      this.videoDecoderMode = checkNotNull(videoDecoderMode);
-      return this;
-    }
-
-    @androidx.annotation.Nullable
-    private androidx.media3.datasource.DataSource.Factory dataSourceFactory;
-
-    @CanIgnoreReturnValue
-    public Builder setDataSourceFactory(
-        androidx.media3.datasource.DataSource.Factory dataSourceFactory) {
-      checkState(!buildCalled);
-      this.dataSourceFactory = checkNotNull(dataSourceFactory);
-      return this;
     }
 
     @CanIgnoreReturnValue
@@ -1111,14 +932,327 @@ public final class MpvPlayer extends SimpleBasePlayer
       return this;
     }
 
+    /** Sets the initial video decoder mode for mpv. */
+    @CanIgnoreReturnValue
+    public Builder setVideoDecoderMode(MpvDecoderMode videoDecoderMode) {
+      this.videoDecoderMode = videoDecoderMode;
+      return this;
+    }
+
+    /** Sets the data source factory used for disc based sources. */
+    @CanIgnoreReturnValue
+    public Builder setDiscDataSourceFactory(@Nullable DataSource.Factory dataSourceFactory) {
+      this.discDataSourceFactory = dataSourceFactory;
+      return this;
+    }
+
     public MpvPlayer build() {
       checkState(!buildCalled);
       buildCalled = true;
-      MpvPlayer player = new MpvPlayer(context, config, decode, looper);
-      if (videoDecoderMode != MpvDecoderMode.AUTO) {
-        player.setVideoDecoderMode(videoDecoderMode);
-      }
-      return player;
+      return new MpvPlayer(context, config, decode, looper, videoDecoderMode, discDataSourceFactory);
     }
+  }
+
+  // DiscMenuController implementation, driven by mpv's built-in disc navigation.
+
+  @Override
+  public boolean open(String action, Consumer<OpenResult> callback) {
+    String mappedAction = mapDiscMenuAction(action);
+    if (mappedAction == null || playlist.currentUri() == null) {
+      callback.accept(OpenResult.UNAVAILABLE);
+      return false;
+    }
+    boolean dispatched = commandDispatcher.command("discnav", mappedAction);
+    callback.accept(dispatched ? OpenResult.OPENED : OpenResult.UNAVAILABLE);
+    return dispatched;
+  }
+
+  @Override
+  public boolean sendAction(String action) {
+    String mappedAction = mapDiscMenuAction(action);
+    if (mappedAction == null) {
+      return false;
+    }
+    return commandDispatcher.command("discnav", mappedAction);
+  }
+
+  @Override
+  public boolean isActive() {
+    Boolean active = commandDispatcher.getPropertyBoolean("disc-menu-active");
+    return active != null && active;
+  }
+
+  @Override
+  public boolean isNavigationPlayback() {
+    Uri currentUri = playlist.currentUri();
+    if (currentUri == null) {
+      return false;
+    }
+    String path = currentUri.getPath();
+    return path != null && path.toLowerCase().endsWith(".iso");
+  }
+
+  @Override
+  public DiscMenuState getDiscMenuState() {
+    if (!isNavigationPlayback()) {
+      return DiscMenuState.EMPTY;
+    }
+    return isActive()
+        ? new DiscMenuState(
+            DiscMenuState.AVAILABILITY_AVAILABLE, DiscMenuState.PHASE_ACTIVE, false)
+        : new DiscMenuState(
+            DiscMenuState.AVAILABILITY_AVAILABLE, DiscMenuState.PHASE_IDLE, false);
+  }
+
+  private static String mapDiscMenuAction(String action) {
+    switch (action) {
+      case "up":
+      case "down":
+      case "left":
+      case "right":
+      case "select":
+      case "menu":
+      case "popup":
+      case "prev":
+        return action;
+      case "title-menu":
+        return "title";
+      default:
+        return null;
+    }
+  }
+
+  // Subtitle transcript and secondary text support.
+
+  /** Sets the loader used to fetch subtitle file content for the transcript outputs. */
+  public void setSubtitleContentLoader(
+      @Nullable androidx.media3.mpvplayer.MpvSubtitleContentLoader loader) {
+    this.subtitleContentLoader = loader;
+  }
+
+  @Override
+  public SubtitleSelectionState getSubtitleSelectionState() {
+    return new SubtitleSelectionState(primarySubtitleSelection, secondarySubtitleSelection);
+  }
+
+  @Override
+  public SubtitleContent getSubtitleContentForSelection(TrackSelectionOverride override) {
+    androidx.media3.mpvplayer.MpvSubtitleContentLoader loader = subtitleContentLoader;
+    MediaItem currentItem = getCurrentMediaItem();
+    if (loader == null
+        || currentItem == null
+        || currentItem.localConfiguration == null
+        || !subtitleContentEnabled
+        || (override != primarySubtitleSelection && override != secondarySubtitleSelection)) {
+      return SubtitleContent.UNSUPPORTED;
+    }
+    Format selectedFormat = override.mediaTrackGroup.getFormat(0);
+    for (MediaItem.SubtitleConfiguration configuration :
+        currentItem.localConfiguration.subtitleConfigurations) {
+      if (!matchesSelection(configuration, selectedFormat)) {
+        continue;
+      }
+      try {
+        Format configurationFormat =
+            new Format.Builder()
+                .setId(configuration.id)
+                .setLabel(configuration.label)
+                .setSampleMimeType(configuration.mimeType)
+                .setLanguage(configuration.language)
+                .build();
+        return loader.load(currentItem, configuration.uri, configurationFormat);
+      } catch (IOException e) {
+        return SubtitleContent.UNSUPPORTED;
+      }
+    }
+    return SubtitleContent.UNSUPPORTED;
+  }
+
+  private static boolean matchesSelection(
+      MediaItem.SubtitleConfiguration configuration, Format selectedFormat) {
+    if (configuration.id != null && configuration.id.equals(selectedFormat.id)) {
+      return true;
+    }
+    if (configuration.label != null && configuration.label.equals(selectedFormat.label)) {
+      return true;
+    }
+    return configuration.mimeType != null
+        && configuration.mimeType.equals(selectedFormat.sampleMimeType)
+        && configuration.language != null
+        && configuration.language.equals(selectedFormat.language);
+  }
+
+  @Override
+  public SubtitleOffsets getSubtitleOffsets() {
+    return subtitleOffsets == null ? SubtitleOffsets.ZERO : subtitleOffsets;
+  }
+
+  @Override
+  public void setSubtitleOffsets(SubtitleOffsets offsets) {
+    this.subtitleOffsets = offsets == null ? SubtitleOffsets.ZERO : offsets;
+  }
+
+  @Override
+  public void setSubtitleContentEnabled(boolean enabled) {
+    this.subtitleContentEnabled = enabled;
+  }
+
+  @Override
+  public boolean canRetrySubtitleContent(Format format) {
+    return subtitleContentLoader != null && subtitleContentEnabled;
+  }
+
+  @Override
+  public void retrySubtitleContent(Format format) {
+    // Content is fetched on demand by {@link #getSubtitleContentForSelection}; nothing to redo.
+  }
+
+  /** Sets the track selection feeding the secondary subtitle output, or null to disable it. */
+  public void setSecondaryTextTrackSelectionOverride(@Nullable TrackSelectionOverride override) {
+    this.secondarySubtitleSelection = override;
+  }
+
+  /** Sets whether the secondary subtitle output picks its track automatically. */
+  public void setSecondaryTextTrackAutoSelectionEnabled(boolean enabled) {
+    this.secondaryTextAutoSelection = enabled;
+    if (enabled) {
+      this.secondarySubtitleSelection = null;
+    }
+  }
+
+  /** Returns whether the secondary subtitle output picks its track automatically. */
+  public boolean isSecondaryTextTrackAutoSelectionEnabled() {
+    return secondaryTextAutoSelection;
+  }
+
+  /** Clears the secondary subtitle track selection. */
+  public void resetSecondaryTextTrackSelection() {
+    this.secondarySubtitleSelection = null;
+    this.secondaryTextAutoSelection = true;
+  }
+
+  /** Sets the primary subtitle track selection, or null when none is forced. */
+  public void setPrimaryTextTrackSelectionOverride(@Nullable TrackSelectionOverride override) {
+    this.primarySubtitleSelection = override;
+  }
+
+  public void setVerboseLoggingEnabled(boolean verboseLoggingEnabled) {
+    this.verboseLoggingEnabled = verboseLoggingEnabled;
+  }
+
+  /** Returns whether verbose logging is enabled for this player. */
+  public boolean isVerboseLoggingEnabled() {
+    return verboseLoggingEnabled;
+  }
+
+  // Script, logging and decoder mode support.
+
+  /** Callback receiving mpv log messages. */
+  public interface LogListener {
+
+    /**
+     * Called for every log message at or above the subscribed level.
+     *
+     * @param prefix The mpv log prefix identifying the subsystem.
+     * @param level The mpv log level.
+     * @param text The log message text.
+     */
+    void onLogMessage(String prefix, int level, String text);
+  }
+
+  /** Callback receiving the outcome of a script load request. */
+  public interface ScriptLoadCallback {
+
+    /**
+     * Called when a script load finished.
+     *
+     * @param success Whether the script was loaded.
+     * @param clientId The client identifier of the loaded script, or 0 on failure.
+     */
+    void onLoadFinished(boolean success, long clientId);
+  }
+
+  /** Subscribes to mpv log messages at the given level, or removes the listener with null. */
+  public void setLogListener(int level, @Nullable LogListener logListener) {
+    this.logListener = logListener;
+  }
+
+  /** Dispatches a log message to the registered listener, if any. */
+  public void dispatchLogMessage(String prefix, int level, String text) {
+    LogListener listener = logListener;
+    if (listener != null) {
+      listener.onLogMessage(prefix, level, text);
+    }
+  }
+
+  /** Sets the scripts mpv loads when the player initializes. */
+  public boolean setStartupScripts(java.util.List<java.io.File> scripts) {
+    return commandDispatcher.setStartupScripts(scripts);
+  }
+
+  /** Loads a script at runtime and reports the outcome to {@code callback}. */
+  public boolean loadScript(String path, @Nullable ScriptLoadCallback callback) {
+    long clientId = ++nextScriptClientId;
+    boolean dispatched = commandDispatcher.loadScript(path);
+    if (callback != null) {
+      if (dispatched) {
+        pendingScriptLoads.put(clientId, callback);
+      } else {
+        callback.onLoadFinished(false, 0);
+      }
+    }
+    return dispatched;
+  }
+
+  /** Unloads the script with the given client identifier. */
+  public void unloadScript(long clientId) {
+    pendingScriptLoads.remove(clientId);
+    commandDispatcher.unloadScript(clientId);
+  }
+
+  /** Returns the value stored by a script under the given key, or an empty string. */
+  public String getScriptData(String key) {
+    String value = scriptData.get(key);
+    return value == null ? "" : value;
+  }
+
+  /** Stores a script data value. Called by the scripting bridge. */
+  public void putScriptData(String key, String value) {
+    scriptData.put(key, value);
+  }
+
+  /** Returns the current input bindings configuration as JSON. */
+  public String getInputBindings() {
+    return commandDispatcher.getInputBindings();
+  }
+
+  /** Invokes an mpv script binding by name. */
+  public boolean runScriptBinding(String binding) {
+    return commandDispatcher.runScriptBinding(binding);
+  }
+
+  /** Returns the current video decoder mode. */
+  public MpvDecoderMode getVideoDecoderMode() {
+    MpvDecoderMode mode = videoDecoderMode;
+    return mode == null ? MpvDecoderMode.AUTO : mode;
+  }
+
+  /** Sets the video decoder mode used for subsequent files. */
+  public void setVideoDecoderMode(MpvDecoderMode mode) {
+    this.videoDecoderMode = mode;
+    if (mode != null) {
+      commandDispatcher.setVideoDecoderMode(mode);
+    }
+  }
+
+  /** Sets the data source factory used for disc based sources. */
+  public void setDiscDataSourceFactory(@Nullable DataSource.Factory dataSourceFactory) {
+    this.discDataSourceFactory = dataSourceFactory;
+  }
+
+  /** Returns the data source factory used for disc based sources, or null. */
+  @Nullable
+  public DataSource.Factory getDiscDataSourceFactory() {
+    return discDataSourceFactory;
   }
 }

@@ -15,6 +15,8 @@
  */
 package androidx.media3.mpvplayer;
 
+import androidx.annotation.Nullable;
+
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
 
@@ -23,6 +25,11 @@ import com.google.errorprone.annotations.CanIgnoreReturnValue;
 
 /** Subtitle presentation options understood by {@link MpvPlayer}. */
 public final class MpvSubtitleOptions {
+
+  /** The default vertical offset applied when none is configured. */
+  public static final double DEFAULT_VERTICAL_OFFSET = 0.0;
+  /** The default brightness applied to bitmap subtitles when none is configured. */
+  public static final float DEFAULT_BITMAP_SUBTITLE_BRIGHTNESS = 0.0f;
 
   public static final int SECONDARY_TRACK_OFF = -2;
   public static final int SECONDARY_TRACK_AUTO = -1;
@@ -46,11 +53,13 @@ public final class MpvSubtitleOptions {
   private final int secondaryTrack;
   private final double secondaryPosition;
   private final boolean secondaryOverrideAssStyles;
+  @Nullable private final String fontsDirectory;
+  @Nullable private final String fontFamily;
   private final double verticalOffset;
+  private final boolean verticalOffsetSet;
   private final float bitmapSubtitleBrightness;
   private final double secondaryVerticalOffset;
-  @javax.annotation.Nullable private final String fontsDirectory;
-  @javax.annotation.Nullable private final String fontFamily;
+  private final boolean secondaryVerticalOffsetSet;
 
   private MpvSubtitleOptions(Builder builder) {
     position = builder.position;
@@ -68,38 +77,13 @@ public final class MpvSubtitleOptions {
     secondaryTrack = builder.secondaryTrack;
     secondaryPosition = builder.secondaryPosition;
     secondaryOverrideAssStyles = builder.secondaryOverrideAssStyles;
-    verticalOffset = builder.verticalOffset;
-    bitmapSubtitleBrightness = builder.bitmapSubtitleBrightness;
-    secondaryVerticalOffset = builder.secondaryVerticalOffset;
     fontsDirectory = builder.fontsDirectory;
     fontFamily = builder.fontFamily;
-  }
-
-  /** Returns the vertical offset of the subtitle relative to its position, in percent. */
-  public double getVerticalOffset() {
-    return verticalOffset;
-  }
-
-  /** Returns the brightness multiplier of bitmap (PGS) subtitles, 1.0f being unchanged. */
-  public float getBitmapSubtitleBrightness() {
-    return bitmapSubtitleBrightness;
-  }
-
-  /** Returns the vertical offset of secondary subtitles relative to their position. */
-  public double getSecondaryVerticalOffset() {
-    return secondaryVerticalOffset;
-  }
-
-  /** Returns the directory scanned for subtitle fonts, or {@code null}. */
-  @javax.annotation.Nullable
-  public String getFontsDirectory() {
-    return fontsDirectory;
-  }
-
-  /** Returns the font family used when styles do not name a family, or {@code null}. */
-  @javax.annotation.Nullable
-  public String getFontFamily() {
-    return fontFamily;
+    verticalOffset = builder.verticalOffset;
+    verticalOffsetSet = builder.verticalOffsetSet;
+    bitmapSubtitleBrightness = builder.bitmapSubtitleBrightness;
+    secondaryVerticalOffset = builder.secondaryVerticalOffset;
+    secondaryVerticalOffsetSet = builder.secondaryVerticalOffsetSet;
   }
 
   public double getPosition() {
@@ -164,6 +148,43 @@ public final class MpvSubtitleOptions {
     return secondaryPosition;
   }
 
+  /** Returns the directory additional fonts are loaded from, or null. */
+  @Nullable
+  public String getFontsDirectory() {
+    return fontsDirectory;
+  }
+
+  /** Returns the font family used for text subtitles, or null. */
+  @Nullable
+  public String getFontFamily() {
+    return fontFamily;
+  }
+
+  /** Returns the vertical offset of the primary subtitles. */
+  public double getVerticalOffset() {
+    return verticalOffset;
+  }
+
+  /** Returns whether a vertical offset was configured. */
+  public boolean isVerticalOffsetSet() {
+    return verticalOffsetSet;
+  }
+
+  /** Returns the brightness applied to bitmap subtitles. */
+  public float getBitmapSubtitleBrightness() {
+    return bitmapSubtitleBrightness;
+  }
+
+  /** Returns the vertical offset of the secondary subtitles. */
+  public double getSecondaryVerticalOffset() {
+    return secondaryVerticalOffset;
+  }
+
+  /** Returns whether a secondary vertical offset was configured. */
+  public boolean isSecondaryVerticalOffsetSet() {
+    return secondaryVerticalOffsetSet;
+  }
+
   public boolean shouldOverrideSecondaryAssStyles() {
     return secondaryOverrideAssStyles;
   }
@@ -186,11 +207,13 @@ public final class MpvSubtitleOptions {
     private int secondaryTrack = SECONDARY_TRACK_OFF;
     private double secondaryPosition;
     private boolean secondaryOverrideAssStyles;
-    private double verticalOffset;
-    private float bitmapSubtitleBrightness = 1.0f;
-    private double secondaryVerticalOffset;
-    @javax.annotation.Nullable private String fontsDirectory;
-    @javax.annotation.Nullable private String fontFamily;
+    @Nullable private String fontsDirectory;
+    @Nullable private String fontFamily;
+    private double verticalOffset = DEFAULT_VERTICAL_OFFSET;
+    private boolean verticalOffsetSet;
+    private float bitmapSubtitleBrightness = DEFAULT_BITMAP_SUBTITLE_BRIGHTNESS;
+    private double secondaryVerticalOffset = DEFAULT_VERTICAL_OFFSET;
+    private boolean secondaryVerticalOffsetSet;
     private boolean buildCalled;
 
     @CanIgnoreReturnValue
@@ -246,23 +269,32 @@ public final class MpvSubtitleOptions {
       return this;
     }
 
-    /** Sets the directory scanned for subtitle fonts. */
+    /** Sets the directory additional fonts are loaded from. */
     @CanIgnoreReturnValue
-    public Builder setFontsDirectory(@javax.annotation.Nullable String fontsDirectory) {
+    public Builder setFontsDirectory(@Nullable String fontsDirectory) {
       checkState(!buildCalled);
       this.fontsDirectory = fontsDirectory;
       return this;
     }
 
-    /** Sets the vertical subtitle offset in percent of the video height. */
+    /** Sets the font family used for text subtitles. */
+    @CanIgnoreReturnValue
+    public Builder setFontFamily(@Nullable String fontFamily) {
+      checkState(!buildCalled);
+      this.fontFamily = fontFamily;
+      return this;
+    }
+
+    /** Sets the vertical offset of the primary subtitles, in the 0..100 range. */
     @CanIgnoreReturnValue
     public Builder setVerticalOffset(float verticalOffset) {
       checkState(!buildCalled);
       this.verticalOffset = verticalOffset;
+      verticalOffsetSet = true;
       return this;
     }
 
-    /** Sets the brightness multiplier of bitmap (PGS) subtitles. */
+    /** Sets the brightness applied to bitmap subtitles, in the -1..1 range. */
     @CanIgnoreReturnValue
     public Builder setBitmapSubtitleBrightness(float bitmapSubtitleBrightness) {
       checkState(!buildCalled);
@@ -270,55 +302,58 @@ public final class MpvSubtitleOptions {
       return this;
     }
 
-    /** Sets the secondary subtitle position in percent. */
+    /** Sets the vertical position of the secondary subtitles, in the 0..100 range. */
     @CanIgnoreReturnValue
     public Builder setSecondarySubtitlePosition(double secondaryPosition) {
       checkState(!buildCalled);
-      secondarySubtitleConfigured = true;
       this.secondaryPosition = secondaryPosition;
+      secondarySubtitleConfigured = true;
       return this;
     }
 
-    /** Sets the vertical offset of secondary subtitles in percent. */
+    /** Sets the time offset of the secondary subtitles, in seconds. */
     @CanIgnoreReturnValue
     public Builder setSecondaryVerticalOffset(double secondaryVerticalOffset) {
       checkState(!buildCalled);
       this.secondaryVerticalOffset = secondaryVerticalOffset;
+      secondaryVerticalOffsetSet = true;
       return this;
     }
 
-    /** Sets whether embedded ASS styles are overridden for secondary subtitles. */
+    /** Sets whether ASS style overrides apply to the secondary subtitles. */
     @CanIgnoreReturnValue
-    public Builder setSecondaryAssStyleOverride(boolean overrideAssStyles) {
+    public Builder setSecondaryAssStyleOverride(boolean enabled) {
       checkState(!buildCalled);
+      this.secondaryOverrideAssStyles = enabled;
       secondarySubtitleConfigured = true;
-      this.secondaryOverrideAssStyles = overrideAssStyles;
       return this;
     }
 
-    /** Sets the font family used when styles do not name a family. */
-    @CanIgnoreReturnValue
-    public Builder setFontFamily(@javax.annotation.Nullable String fontFamily) {
-      checkState(!buildCalled);
-      this.fontFamily = fontFamily;
-      return this;
-    }
-
-    /** Sets the default subtitle style used when neither custom nor system style applies. */
+    /**
+     * Sets the default style for text subtitles.
+     *
+     * @param foregroundColor The text color as an ARGB int.
+     * @param backgroundColor The background color as an ARGB int.
+     * @param edgeType The edge type, one of {@code CaptionStyleCompat} edge types.
+     * @param edgeColor The edge color as an ARGB int.
+     * @param edgeWidth The edge width in pixels.
+     * @param shadowOffset The shadow offset in pixels.
+     */
     @CanIgnoreReturnValue
     public Builder setDefaultStyle(
         int foregroundColor,
         int backgroundColor,
         int edgeType,
         int edgeColor,
-        float edgeSize,
+        float edgeWidth,
         float shadowOffset) {
       checkState(!buildCalled);
+      style = STYLE_CUSTOM;
       this.foregroundColor = foregroundColor;
       this.backgroundColor = backgroundColor;
       this.edgeType = edgeType;
       this.edgeColor = edgeColor;
-      this.edgeSize = edgeSize;
+      this.edgeSize = edgeWidth;
       this.shadowOffset = shadowOffset;
       return this;
     }
