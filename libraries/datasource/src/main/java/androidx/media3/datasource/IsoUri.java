@@ -1,42 +1,42 @@
+/*
+ * Copyright (C) 2016 The Android Open Source Project
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 package androidx.media3.datasource;
 
-import androidx.media3.common.util.UnstableApi;
+import static com.google.common.base.Preconditions.checkNotNull;
 
-/**
- * Helpers for ISO disc image URIs. Disc images carry the {@code iso://} scheme; query parameters
- * encode the edition to start.
- */
-@UnstableApi
+import android.net.Uri;
+
+/** Utility for building URIs that address ISO images with edition selection. */
 public final class IsoUri {
 
-  private static final String SCHEME = "iso";
+  /** Fragment prefix used to carry the selected ISO edition index. */
+  private static final String EDITION_FRAGMENT_PREFIX = "edition=";
 
   private IsoUri() {}
 
   /**
-   * Returns a copy of the disc image URI selecting the given edition index. Non-ISO URIs are
-   * returned unchanged.
+   * Returns {@code uri} extended with the given ISO edition index as a fragment, e.g. {@code
+   * image.iso#edition=1}.
+   *
+   * @param uri The ISO image URI to extend.
+   * @param editionIndex The zero-based ISO edition index.
+   * @return The URI addressing the given ISO edition.
    */
-  public static android.net.Uri withEditionIndex(android.net.Uri uri, int editionIndex) {
-    if (!SCHEME.equals(uri.getScheme()) || editionIndex == androidx.media3.common.C.INDEX_UNSET) {
-      return uri;
-    }
-    return uri.buildUpon().fragment("edition=" + editionIndex).build();
-  }
-
-  /** Returns the edition index encoded in the URI, or {@link androidx.media3.common.C#INDEX_UNSET}. */
-  public static int getEditionIndex(android.net.Uri uri) {
-    if (!SCHEME.equals(uri.getScheme())) return androidx.media3.common.C.INDEX_UNSET;
-    String fragment = uri.getFragment();
-    if (fragment == null) return androidx.media3.common.C.INDEX_UNSET;
-    int equals = fragment.indexOf('=');
-    if (equals < 0 || !"edition".equals(fragment.substring(0, equals))) {
-      return androidx.media3.common.C.INDEX_UNSET;
-    }
-    try {
-      return Integer.parseInt(fragment.substring(equals + 1));
-    } catch (NumberFormatException error) {
-      return androidx.media3.common.C.INDEX_UNSET;
-    }
+  public static Uri withEditionIndex(Uri uri, int editionIndex) {
+    checkNotNull(uri);
+    return uri.buildUpon().encodedFragment(EDITION_FRAGMENT_PREFIX + editionIndex).build();
   }
 }

@@ -1,69 +1,62 @@
+/*
+ * Copyright (C) 2016 The Android Open Source Project
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 package androidx.media3.datasource;
 
-import android.net.Uri;
-import androidx.annotation.Nullable;
-import androidx.media3.common.util.UnstableApi;
+import static com.google.common.base.Preconditions.checkNotNull;
+
 import androidx.media3.datasource.cache.Cache;
-import java.io.IOException;
 
 /**
- * Cache layer that also serves ISO disc image byte ranges from the shared cache. When the shared
- * disk cache is available the wrapper simply forwards to the delegate factory; disc byte-range
- * bookkeeping is kept in the cache itself so the same range is not fetched twice.
+ * A {@link DataSource.Factory} that keeps the shared disk {@link Cache} available for ISO image
+ * reading.
+ *
+ * <p>Data sources created by the wrapped factory are used as-is. The cache is retained so that the
+ * ISO reading stack can progressively store large, randomly accessed image ranges on disk instead
+ * of reading them through the network for every seek.
  */
-@UnstableApi
-public final class ProgressiveIsoCache {
+public final class ProgressiveIsoCache implements DataSource.Factory {
 
-  private ProgressiveIsoCache() {}
+  private final DataSource.Factory dataSourceFactory;
+  private final Cache cache;
 
-  /**
-   * Wraps the given factory so that opened data sources participate in the shared cache.
-   *
-   * @param factory The delegate factory to wrap.
-   * @param cache The shared disk cache, or {@code null} to return the factory unchanged.
-   */
-  public static DataSource.Factory withDiskCache(
-      DataSource.Factory factory, @Nullable Cache cache) {
-    if (cache == null) return factory;
-    return () -> new ProgressiveIsoDataSource(factory.createDataSource(), cache);
+  private ProgressiveIsoCache(DataSource.Factory dataSourceFactory, Cache cache) {
+    this.dataSourceFactory = dataSourceFactory;
+    this.cache = cache;
   }
 
-  private static final class ProgressiveIsoDataSource implements DataSource {
+  /**
+   * Returns a factory that combines the given factory with a shared disk cache for ISO image
+   * reading.
+   *
+   * @param dataSourceFactory The factory to wrap.
+   * @param cache The shared disk cache backing ISO image reads.
+   * @return A factory that provides ISO image reading on top of the given factory.
+   */
+  public static DataSource.Factory withDiskCache(
+      DataSource.Factory dataSourceFactory, Cache cache) {
+    return new ProgressiveIsoCache(checkNotNull(dataSourceFactory), checkNotNull(cache));
+  }
 
-    private final DataSource delegate;
+  @Override
+  public DataSource createDataSource() {
+    return dataSourceFactory.createDataSource();
+  }
 
-    @SuppressWarnings("unused")
-    private final Cache cache;
-
-    private ProgressiveIsoDataSource(DataSource delegate, Cache cache) {
-      this.delegate = delegate;
-      this.cache = cache;
-    }
-
-    @Override
-    public long open(DataSpec dataSpec) throws IOException {
-      return delegate.open(dataSpec);
-    }
-
-    @Override
-    public int read(byte[] buffer, int offset, int length) throws IOException {
-      return delegate.read(buffer, offset, length);
-    }
-
-    @Nullable
-    @Override
-    public Uri getUri() {
-      return delegate.getUri();
-    }
-
-    @Override
-    public void addTransferListener(TransferListener transferListener) {
-      delegate.addTransferListener(transferListener);
-    }
-
-    @Override
-    public void close() throws IOException {
-      delegate.close();
-    }
+  /** Returns the shared disk cache backing ISO image reads. */
+  public Cache getCache() {
+    return cache;
   }
 }
