@@ -29,9 +29,13 @@ public interface PreloadManagerListener {
   /** Called when the given {@link MediaItem} has completed preloading. */
   default void onCompleted(MediaItem mediaItem) {}
 
-  /** Called when preloading of the given {@link MediaItem} has been paused. */
-  default void onPreloadPaused(MediaItem mediaItem) {}
-
   /** Called when an {@linkplain PreloadException error} occurs. */
   default void onError(PreloadException exception) {}
+
+  /**
+   * Called when the preload of the given media item was paused.
+   *
+   * @param mediaItem The media item whose preload was paused.
+   */
+  default void onPreloadPaused(MediaItem mediaItem) {}
 }
