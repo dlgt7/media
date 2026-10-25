@@ -1,57 +1,104 @@
+/*
+ * Copyright (C) 2026 The Android Open Source Project
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 package androidx.media3.exoplayer.libass;
 
+import android.util.Xml;
 import androidx.media3.common.util.UnstableApi;
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
-import java.io.OutputStreamWriter;
-import java.io.Writer;
+import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
+import org.xmlpull.v1.XmlSerializer;
 
-/**
- * Generates a fontconfig {@code fonts.conf} that exposes the system font directories plus the
- * user-provided subtitle font directories to libass.
- */
+/** Writes the fontconfig configuration used by the libass subtitle renderer. */
 @UnstableApi
 public final class LibassFontConfig {
 
   private LibassFontConfig() {}
 
   /**
-   * Writes a fontconfig document covering the given directories.
+   * Writes a fontconfig configuration file.
    *
-   * @param output Target file for the generated {@code fonts.conf}.
-   * @param cacheDirectory Directory fontconfig may use for its cache.
-   * @param fontDirectories Directories to scan for fonts, in priority order.
+   * @param output The file the configuration is written to.
+   * @param cacheDirectory The directory fontconfig may use to store its caches.
+   * @param fontDirectories The additional directories fonts are loaded from.
+   * @throws IOException If the configuration could not be written.
    */
   public static void write(File output, File cacheDirectory, List<File> fontDirectories)
       throws IOException {
+    byte[] data = toBytes(cacheDirectory, fontDirectories);
     File parent = output.getParentFile();
-    if (parent != null && !parent.isDirectory() && !parent.mkdirs()) {
-      throw new IOException("Cannot create " + parent);
+    if (parent != null && !parent.exists() && !parent.mkdirs() && !parent.exists()) {
+      throw new IOException("Unable to create directory " + parent);
     }
-    StringBuilder xml = new StringBuilder();
-    xml.append("<?xml version=\"1.0\"?>\n");
-    xml.append("<!DOCTYPE fontconfig SYSTEM \"fonts.dtd\">\n");
-    xml.append("<fontconfig>\n");
-    xml.append("  <cachedir>")
-        .append(escape(cacheDirectory.getAbsolutePath()))
-        .append("</cachedir>\n");
-    for (File directory : fontDirectories) {
-      if (directory == null) continue;
-      xml.append("  <dir>")
-          .append(escape(directory.getAbsolutePath()))
-          .append("</dir>\n");
-    }
-    xml.append("</fontconfig>\n");
-    try (Writer writer =
-        new OutputStreamWriter(new FileOutputStream(output), StandardCharsets.UTF_8)) {
-      writer.write(xml.toString());
+    OutputStream outputStream = new FileOutputStream(output);
+    try {
+      outputStream.write(data);
+    } finally {
+      try {
+        outputStream.close();
+      } catch (IOException e) {
+        // Ignored.
+      }
     }
   }
 
-  private static String escape(String value) {
-    return value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;");
+  private static byte[] toBytes(File cacheDirectory, List<File> fontDirectories) throws IOException {
+    ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
+    XmlSerializer serializer = Xml.newSerializer();
+    serializer.setOutput(outputStream, StandardCharsets.UTF_8.name());
+    serializer.startDocument(StandardCharsets.UTF_8.name(), Boolean.TRUE);
+    serializer.startTag(null, "fontconfig");
+    writeTextElement(serializer, "dir", "/system/fonts/");
+    writeTextElement(serializer, "dir", "/product/fonts/");
+    for (int i = 0; i < fontDirectories.size(); i++) {
+      File fontDirectory = fontDirectories.get(i);
+      if (fontDirectory != null && fontDirectory.isDirectory()) {
+        writeTextElement(serializer, "dir", fontDirectory.getAbsolutePath());
+      }
+    }
+    writeTextElement(serializer, "cachedir", cacheDirectory.getAbsolutePath());
+    writeAlias(serializer, "serif", "Noto Serif");
+    writeAlias(serializer, "sans-serif", "Roboto", "Noto Sans");
+    writeAlias(serializer, "monospace", "Droid Sans Mono");
+    serializer.endTag(null, "fontconfig");
+    serializer.endDocument();
+    serializer.flush();
+    return outputStream.toByteArray();
+  }
+
+  private static void writeTextElement(XmlSerializer serializer, String name, String text)
+      throws IOException {
+    serializer.startTag(null, name);
+    serializer.text(text);
+    serializer.endTag(null, name);
+  }
+
+  private static void writeAlias(XmlSerializer serializer, String family, String... preferred)
+      throws IOException {
+    serializer.startTag(null, "alias");
+    writeTextElement(serializer, "family", family);
+    serializer.startTag(null, "prefer");
+    for (String preferredFamily : preferred) {
+      writeTextElement(serializer, "family", preferredFamily);
+    }
+    serializer.endTag(null, "prefer");
+    serializer.endTag(null, "alias");
   }
 }
