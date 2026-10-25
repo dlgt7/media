@@ -154,6 +154,33 @@ public class PlayerSeekView extends FrameLayout
     resetView();
   }
 
+  @Nullable private java.util.function.LongSupplier durationSupplier;
+  private long durationOverrideMs = C.TIME_UNSET;
+
+  /**
+   * Sets the supplier of the duration shown while the player does not report one, for example
+   * while a disc menu drives playback.
+   *
+   * @param durationSupplier The duration supplier in milliseconds, or null to clear.
+   */
+  public void setDurationSupplier(@Nullable java.util.function.LongSupplier durationSupplier) {
+    this.durationSupplier = durationSupplier;
+    updateDuration();
+  }
+
+  private void updateDuration() {
+    java.util.function.LongSupplier supplier = durationSupplier;
+    if (supplier == null) {
+      durationOverrideMs = C.TIME_UNSET;
+    } else {
+      try {
+        durationOverrideMs = supplier.getAsLong();
+      } catch (RuntimeException e) {
+        durationOverrideMs = C.TIME_UNSET;
+      }
+    }
+  }
+
   /** Sets the player whose progress should be shown. */
   public void setPlayer(@Nullable Player player) {
     checkState(Looper.myLooper() == Looper.getMainLooper());
@@ -174,26 +201,6 @@ public class PlayerSeekView extends FrameLayout
   }
 
   /** Returns the bound {@link TimeBar}. */
-  private java.util.function.LongSupplier durationSupplier;
-
-  /**
-   * Supplies the duration shown by the seek bar, overriding the player duration. Used when the
-   * UI presents an adjusted timeline (for example web playback).
-   *
-   * @param durationSupplier Supplies the duration in milliseconds, or {@code C.TIME_UNSET}.
-   */
-  @UnstableApi
-  public void setDurationSupplier(java.util.function.LongSupplier durationSupplier) {
-    this.durationSupplier = durationSupplier;
-  }
-
-  /** Returns the duration supplier, or {@code null} when the player duration is used. */
-  @UnstableApi
-  @Nullable
-  public java.util.function.LongSupplier getDurationSupplier() {
-    return durationSupplier;
-  }
-
   public TimeBar getTimeBar() {
     return timeBar;
   }
@@ -226,6 +233,9 @@ public class PlayerSeekView extends FrameLayout
       if (durationMs != C.TIME_UNSET) {
         durationUs = msToUs(durationMs);
       }
+    }
+    if (durationUs == C.TIME_UNSET && durationOverrideMs != C.TIME_UNSET) {
+      durationUs = msToUs(durationOverrideMs);
     }
     updateDuration(Util.usToMs(durationUs), adGroupCount);
     updateProgress();
