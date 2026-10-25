@@ -1,23 +1,33 @@
+/*
+ * Copyright (C) 2026 The Android Open Source Project
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 package androidx.media3.common.audio;
 
 import androidx.annotation.Nullable;
+import androidx.media3.common.util.UnstableApi;
+import com.google.common.collect.ImmutableList;
 import java.util.Arrays;
 
-/**
- * Immutable description of the requested audio processing chain (equalizer, channel transform,
- * loudness normalization) as configured by the user.
- */
+/** Immutable set of parameters describing the audio effects to apply to a playback. */
+@UnstableApi
 public final class AudioEffectParameters {
 
-  /** A parameter set that requests no processing. */
+  /** Parameters that request no effect at all. */
   public static final AudioEffectParameters DEFAULT = new Builder().build();
 
-  /** Returns whether a front-center gain control can apply to the given layout. */
-  public static boolean isCenterGainAvailable(int channelCount) {
-    return channelCount >= 3;
-  }
-
-  private final int[] equalizerFrequenciesHz;
+  private final ImmutableList<Integer> equalizerFrequencies;
   private final short[] equalizerLevels;
   private final float stability;
   private final int boostMillibels;
@@ -28,8 +38,9 @@ public final class AudioEffectParameters {
   private final boolean loudnessEnabled;
 
   private AudioEffectParameters(Builder builder) {
-    this.equalizerFrequenciesHz = builder.equalizerFrequenciesHz;
-    this.equalizerLevels = builder.equalizerLevels;
+    this.equalizerFrequencies =
+        ImmutableList.copyOf(Arrays.stream(builder.frequencies).boxed().iterator());
+    this.equalizerLevels = builder.levels;
     this.stability = builder.stability;
     this.boostMillibels = builder.boostMillibels;
     this.preampMillibels = builder.preampMillibels;
@@ -39,72 +50,71 @@ public final class AudioEffectParameters {
     this.loudnessEnabled = builder.loudnessEnabled;
   }
 
-  /** Returns whether any processing is requested at all. */
+  /** Returns whether any effect would produce an audible change. */
   public boolean hasEffect() {
-    return hasBands() || channelModeTransformRequired() || loudnessEnabled || balance != 0.0f;
+    return hasBands()
+        || stability > 0.0f
+        || boostMillibels > 0
+        || preampMillibels != 0
+        || balance != 0.0f
+        || AudioChannelMode.clamp(channelMode) != AudioChannelMode.AUTO
+        || centerGainMillibels > 0
+        || loudnessEnabled;
   }
 
-  /** Returns whether an equalizer curve is present. */
+  /** Returns whether equalizer band levels are present. */
   public boolean hasBands() {
     return equalizerLevels.length > 0;
   }
 
-  /** Returns whether a center gain applies to the given layout. */
+  /** Returns whether any equalizer band boosts its level above zero. */
+  public boolean hasBoostedBands() {
+    for (short level : equalizerLevels) {
+      if (level > 0) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /** Returns whether center gain can apply to playback with the given channel count. */
+  public static boolean isCenterGainAvailable(int channelCount) {
+    return channelCount == 6 || channelCount == 8;
+  }
+
+  /** Returns whether center gain applies to playback with the given channel count. */
   public boolean hasCenterGain(int channelCount) {
-    return isCenterGainAvailable(channelCount) && centerGainMillibels != 0;
+    return centerGainMillibels > 0 && isCenterGainAvailable(channelCount);
   }
 
-  /** Returns the center gain as a linear multiplier around 1.0f. */
+  /** Returns the linear center gain factor, or 1.0 when disabled. */
   public float getCenterGainFactor() {
-    return (float) Math.pow(10.0, centerGainMillibels / 2000.0);
+    return toLinear(centerGainMillibels);
   }
 
-  /** Returns the equalizer band center frequencies in Hz, parallel to the levels. */
-  public int[] getEqualizerFrequenciesHz() {
-    return equalizerFrequenciesHz;
+  /** Returns the linear boost factor. */
+  public float getBoostFactor() {
+    return toLinear(boostMillibels);
   }
 
-  /** Returns the equalizer levels in millibels per band. */
-  public short[] getEqualizerLevels() {
-    return equalizerLevels;
+  /** Returns the linear preamp factor. */
+  public float getPreampFactor() {
+    return toLinear(preampMillibels);
   }
 
-  /** Alias of {@link #getEqualizerLevels()}. */
-  public short[] getEqualizerLevelsMillibels() {
-    return equalizerLevels;
-  }
-
-  /**
-   * Returns whether the output stage must be limited when applying the requested boost to the
-   * given layout (multi-channel output can clip earlier than stereo).
-   */
-  public boolean shouldLimitOutput(int channelCount) {
-    return boostMillibels > 0 && channelCount >= 3;
-  }
-
-  /** Returns the dynamic normalization stability in the 0..1 range. */
+  /** Returns the stability amount in the 0..1 range. */
   public float getStability() {
     return stability;
   }
 
-  /** Returns the output boost in millibels. */
-  public int getBoostMillibels() {
-    return boostMillibels;
-  }
-
-  /** Returns the pre-amplification in millibels. */
-  public int getPreampMillibels() {
-    return preampMillibels;
-  }
-
-  /** Returns the stored stereo balance in the -1..1 range. */
+  /** Returns the left/right balance in the -1..1 range. */
   public float getBalance() {
     return balance;
   }
 
-  /** Returns the stored {@link AudioChannelMode}. */
+  /** Returns the requested channel mode, one of the {@link AudioChannelMode} constants. */
   public int getChannelMode() {
-    return channelMode;
+    return AudioChannelMode.clamp(channelMode);
   }
 
   /** Returns whether loudness normalization is requested. */
@@ -112,110 +122,151 @@ public final class AudioEffectParameters {
     return loudnessEnabled;
   }
 
-  private boolean channelModeTransformRequired() {
-    return channelMode == AudioChannelMode.MONO || channelMode == AudioChannelMode.REVERSE;
+  /** Returns the boost level in millibels. */
+  public int getBoostMillibels() {
+    return boostMillibels;
   }
 
-  @Override
-  public boolean equals(@Nullable Object obj) {
-    if (this == obj) return true;
-    if (!(obj instanceof AudioEffectParameters)) return false;
-    AudioEffectParameters other = (AudioEffectParameters) obj;
-    return Arrays.equals(equalizerFrequenciesHz, other.equalizerFrequenciesHz)
-        && Arrays.equals(equalizerLevels, other.equalizerLevels)
-        && stability == other.stability
-        && boostMillibels == other.boostMillibels
-        && preampMillibels == other.preampMillibels
-        && centerGainMillibels == other.centerGainMillibels
-        && balance == other.balance
-        && channelMode == other.channelMode
-        && loudnessEnabled == other.loudnessEnabled;
+  /** Returns the preamp level in millibels. */
+  public int getPreampMillibels() {
+    return preampMillibels;
   }
 
-  @Override
-  public int hashCode() {
-    int result = Arrays.hashCode(equalizerFrequenciesHz);
-    result = 31 * result + Arrays.hashCode(equalizerLevels);
-    result = 31 * result + Float.floatToIntBits(stability);
-    result = 31 * result + boostMillibels;
-    result = 31 * result + preampMillibels;
-    result = 31 * result + centerGainMillibels;
-    result = 31 * result + Float.floatToIntBits(balance);
-    result = 31 * result + channelMode;
-    result = 31 * result + (loudnessEnabled ? 1 : 0);
-    return result;
+  /** Returns the center gain level in millibels. */
+  public int getCenterGainMillibels() {
+    return centerGainMillibels;
+  }
+
+  /** Returns the equalizer band center frequencies in Hz. */
+  public int[] getEqualizerFrequenciesHz() {
+    int[] frequencies = new int[equalizerFrequencies.size()];
+    for (int i = 0; i < frequencies.length; i++) {
+      frequencies[i] = equalizerFrequencies.get(i);
+    }
+    return frequencies;
+  }
+
+  /** Returns the equalizer band levels in millibels. */
+  public short[] getEqualizerLevelsMillibels() {
+    return Arrays.copyOf(equalizerLevels, equalizerLevels.length);
+  }
+
+  /** Returns whether the output needs to be limited to avoid clipping with these parameters. */
+  public boolean shouldLimitOutput(int channelCount) {
+    return stability > 0.0f
+        || boostMillibels > 0
+        || loudnessEnabled
+        || hasCenterGain(channelCount)
+        || hasBoostedBands()
+        || AudioChannelMode.isAvailable(getChannelMode(), channelCount);
+  }
+
+  private static float toLinear(int millibels) {
+    if (millibels == 0) {
+      return 1.0f;
+    }
+    return (float) Math.pow(10.0, millibels / 2000.0);
   }
 
   /** Builder for {@link AudioEffectParameters}. */
   public static final class Builder {
 
-    private int[] equalizerFrequenciesHz = new int[0];
-    private short[] equalizerLevels = new short[0];
-    private float stability = 1.0f;
+    private int[] frequencies = new int[0];
+    private short[] levels = new short[0];
+    private float stability;
     private int boostMillibels;
     private int preampMillibels;
     private int centerGainMillibels;
     private float balance;
-    private int channelMode = AudioChannelMode.STEREO;
+    private int channelMode = AudioChannelMode.AUTO;
     private boolean loudnessEnabled;
 
-    /**
-     * Sets the equalizer curve. Frequencies are in Hz; levels are in millibels. Both arrays must
-     * have the same length.
-     */
-    public Builder setEqualizerBands(int[] frequenciesHz, short[] levelsMillibels) {
-      if (frequenciesHz.length != levelsMillibels.length) {
-        throw new IllegalArgumentException("Frequency/level length mismatch");
-      }
-      this.equalizerFrequenciesHz = frequenciesHz.clone();
-      this.equalizerLevels = levelsMillibels.clone();
+    /** Sets the equalizer band center frequencies in Hz and levels in millibels. */
+    public Builder setEqualizerBands(int[] frequencies, short[] levels) {
+      this.frequencies = frequencies != null ? Arrays.copyOf(frequencies, frequencies.length) : new int[0];
+      this.levels = levels != null ? Arrays.copyOf(levels, levels.length) : new short[0];
       return this;
     }
 
-    /** Sets the dynamic normalization stability in the 0..1 range. */
+    /** Sets the stability amount, in the 0..1 range. */
     public Builder setStability(float stability) {
-      this.stability = Math.max(0.0f, Math.min(1.0f, stability));
+      this.stability = stability;
       return this;
     }
 
-    /** Sets the output boost in millibels. */
+    /** Sets the volume boost in millibels. */
     public Builder setBoostMillibels(int boostMillibels) {
       this.boostMillibels = boostMillibels;
       return this;
     }
 
-    /** Sets the pre-amplification in millibels. */
+    /** Sets the preamp level in millibels. */
     public Builder setPreampMillibels(int preampMillibels) {
       this.preampMillibels = preampMillibels;
       return this;
     }
 
-    /** Sets the front-center gain in millibels. */
+    /** Sets the center gain in millibels. */
     public Builder setCenterGainMillibels(int centerGainMillibels) {
       this.centerGainMillibels = centerGainMillibels;
       return this;
     }
 
-    /** Sets the stereo balance in the -1..1 range. */
+    /** Sets the left/right balance in the -1..1 range. */
     public Builder setBalance(float balance) {
-      this.balance = Math.max(-1.0f, Math.min(1.0f, balance));
+      this.balance = balance;
       return this;
     }
 
-    /** Sets the {@link AudioChannelMode}. */
-    public Builder setChannelMode(@AudioChannelMode.Mode int channelMode) {
-      this.channelMode = channelMode;
+    /** Sets the requested channel mode, one of the {@link AudioChannelMode} constants. */
+    public Builder setChannelMode(int channelMode) {
+      this.channelMode = AudioChannelMode.clamp(channelMode);
       return this;
     }
 
-    /** Sets whether loudness normalization is requested. */
+    /** Sets whether loudness normalization is enabled. */
     public Builder setLoudnessEnabled(boolean loudnessEnabled) {
       this.loudnessEnabled = loudnessEnabled;
       return this;
     }
 
+    /** Builds the parameters. */
     public AudioEffectParameters build() {
       return new AudioEffectParameters(this);
     }
+  }
+
+  @Override
+  public boolean equals(@Nullable Object o) {
+    if (this == o) {
+      return true;
+    }
+    if (!(o instanceof AudioEffectParameters)) {
+      return false;
+    }
+    AudioEffectParameters that = (AudioEffectParameters) o;
+    return Float.compare(that.stability, stability) == 0
+        && boostMillibels == that.boostMillibels
+        && preampMillibels == that.preampMillibels
+        && centerGainMillibels == that.centerGainMillibels
+        && Float.compare(that.balance, balance) == 0
+        && channelMode == that.channelMode
+        && loudnessEnabled == that.loudnessEnabled
+        && Arrays.equals(equalizerLevels, that.equalizerLevels)
+        && equalizerFrequencies.equals(that.equalizerFrequencies);
+  }
+
+  @Override
+  public int hashCode() {
+    int result = equalizerFrequencies.hashCode();
+    result = 31 * result + Arrays.hashCode(equalizerLevels);
+    result = 31 * result + (stability != 0.0f ? Float.floatToIntBits(stability) : 0);
+    result = 31 * result + boostMillibels;
+    result = 31 * result + preampMillibels;
+    result = 31 * result + centerGainMillibels;
+    result = 31 * result + (balance != 0.0f ? Float.floatToIntBits(balance) : 0);
+    result = 31 * result + channelMode;
+    result = 31 * result + (loudnessEnabled ? 1 : 0);
+    return result;
   }
 }

@@ -1,71 +1,78 @@
+/*
+ * Copyright (C) 2026 The Android Open Source Project
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 package androidx.media3.common.audio;
 
-import androidx.annotation.IntDef;
-import java.lang.annotation.Documented;
-import java.lang.annotation.Retention;
-import java.lang.annotation.RetentionPolicy;
+import androidx.media3.common.util.UnstableApi;
 
-/**
- * Channel downmix preference for audio playback. Renderers that cannot output the original
- * channel layout use the resolved mode when folding the stream down.
- */
+/** Channel mode requested by the user for audio effects, resolved against the input channels. */
+@UnstableApi
 public final class AudioChannelMode {
 
-  public static final int STEREO = 0;
-  public static final int MONO = 1;
-  public static final int REVERSE = 2;
+  /** Leave the channel layout as-is; only balance-style effects may still apply. */
+  public static final int AUTO = 0;
+  /** Downmix the front stereo pair, keeping the other channels at reduced power. */
+  public static final int STEREO = 1;
+  /** Downmix everything into a single mono channel. */
+  public static final int MONO = 2;
+  /** Swap the left and right front channels. */
+  public static final int REVERSE = 3;
 
-  /** Follows the content: no forced downmix is applied. */
-  public static final int AUTO = -1;
-
-  /** @deprecated Use the constants above. */
-  @Documented
-  @Retention(RetentionPolicy.SOURCE)
-  @IntDef({STEREO, MONO, REVERSE})
-  public @interface Mode {}
+  private static final int MIN_MODE = AUTO;
+  private static final int MAX_MODE = REVERSE;
 
   private AudioChannelMode() {}
 
-  /**
-   * Resolves the stored preference against the stream channel count. Mode transformations are
-   * only meaningful for stereo-capable layouts; other layouts keep the stored mode untouched so
-   * callers can detect "no transform" with {@link #isAvailable(int, int)}.
-   */
-  public static @Mode int resolve(@Mode int mode, int channelCount) {
-    return mode;
+  /** Clamps a persisted mode value into the {@link #AUTO}..{@link #REVERSE} range. */
+  public static int clamp(int mode) {
+    return Math.max(MIN_MODE, Math.min(MAX_MODE, mode));
   }
 
   /**
-   * Returns whether a channel transform is applicable: the stream must carry more than one
-   * channel.
+   * Resolves a persisted mode against the channel count of the audio being played. The resolved
+   * value is always one of the four mode constants and can be fed back to {@link #isAvailable}
+   * and {@link #canBalance}.
    */
-  public static boolean isAvailable(@Mode int mode, int channelCount) {
-    return channelCount > 1;
+  public static int resolve(int mode, int channelCount) {
+    return clamp(mode);
   }
 
-  /** Returns whether the given mode can apply a balance transform. */
-  public static boolean canBalance(@Mode int mode, int channelCount) {
-    return isAvailable(resolve(mode, channelCount), channelCount);
+  /**
+   * Returns whether channel mixing effects can apply to audio with the given channel count.
+   *
+   * @param channelCount The number of channels of the audio being played.
+   */
+  public static boolean isAvailable(int channelCount) {
+    return channelCount >= 2 && channelCount <= 8;
   }
 
-  /** Returns whether the given mode supports a balance transform on any layout. */
-  public static boolean canBalance(@Mode int mode) {
+  /** Returns whether the mode can produce an audible change for the given channel count. */
+  public static boolean isAvailable(int mode, int channelCount) {
+    if (channelCount < 2) {
+      return mode == MONO && channelCount >= 1;
+    }
+    return true;
+  }
+
+  /** Returns whether left/right balance can apply for the mode. */
+  public static boolean canBalance(int mode) {
     return mode != MONO;
   }
 
-  /** Returns whether a channel transform is applicable to the given layout. */
-  public static boolean isAvailable(int channelCount) {
-    return channelCount > 1;
-  }
-
-  /** Returns whether the given mode requests automatic (content driven) handling. */
-  public static boolean isAuto(@Mode int mode) {
+  /** Returns whether the mode only applies balance-style effects and no forced downmix. */
+  public static boolean isAuto(int mode) {
     return mode == AUTO;
-  }
-
-  /** Constrains the given mode to the set of known modes. */
-  public static @Mode int clamp(int mode) {
-    if (mode == AUTO || mode == STEREO || mode == MONO || mode == REVERSE) return mode;
-    return AUTO;
   }
 }
