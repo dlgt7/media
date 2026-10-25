@@ -1,74 +1,85 @@
+/*
+ * Copyright (C) 2026 The Android Open Source Project
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 package androidx.media3.common;
 
-import androidx.annotation.IntDef;
-import java.lang.annotation.Documented;
-import java.lang.annotation.Retention;
-import java.lang.annotation.RetentionPolicy;
+import androidx.annotation.Nullable;
+import androidx.media3.common.util.UnstableApi;
+import java.util.Objects;
 
-/** Immutable snapshot describing the state of an optical disc navigation session. */
+/** The current state of the optical disc menu playback, as exposed by a {@link Player}. */
+@UnstableApi
 public final class DiscMenuState {
 
-  /** The disc menu is not available for the current media item. */
-  public static final int AVAILABILITY_UNAVAILABLE = 0;
+  /** Availability of the disc menu is not determined yet. */
+  public static final int AVAILABILITY_PENDING = 0;
 
-  /** The disc menu is available for the current media item. */
-  public static final int AVAILABILITY_AVAILABLE = 1;
+  /** No disc menu can be opened for the current media item. */
+  public static final int AVAILABILITY_UNAVAILABLE = 1;
 
-  /** No navigation session; the player behaves like a regular progressive stream. */
+  /** A disc menu can be opened for the current media item. */
+  public static final int AVAILABILITY_AVAILABLE = 2;
+
+  /** No disc menu interaction is in progress. */
   public static final int PHASE_IDLE = 0;
 
-  /** Navigation is preparing (mounting the disc image or starting the runtime). */
+  /** A disc menu open request is pending. */
   public static final int PHASE_OPENING = 1;
 
-  /** Navigation is active; disc menus respond to user input. */
+  /** A disc menu is active and receives navigation input. */
   public static final int PHASE_ACTIVE = 2;
 
-  /** @deprecated Use {@link #AVAILABILITY_UNAVAILABLE}. */
-  @Documented
-  @Retention(RetentionPolicy.SOURCE)
-  @IntDef({AVAILABILITY_UNAVAILABLE, AVAILABILITY_AVAILABLE})
-  public @interface Availability {}
+  /** The state reported when no disc menu controller is available. */
+  public static final DiscMenuState EMPTY =
+      new DiscMenuState(AVAILABILITY_UNAVAILABLE, PHASE_IDLE, /* navigationPlaybackOngoing= */ false);
 
-  /** @deprecated Use {@link #PHASE_IDLE}. */
-  @Documented
-  @Retention(RetentionPolicy.SOURCE)
-  @IntDef({PHASE_IDLE, PHASE_OPENING, PHASE_ACTIVE})
-  public @interface Phase {}
+  /**
+   * Availability of the disc menu. One of {@link #AVAILABILITY_PENDING}, {@link
+   * #AVAILABILITY_UNAVAILABLE} or {@link #AVAILABILITY_AVAILABLE}.
+   */
+  public final int availability;
 
-  /** A state that describes a regular (non disc) playback session. */
-  public static final DiscMenuState IDLE =
-      new DiscMenuState(AVAILABILITY_UNAVAILABLE, PHASE_IDLE, false);
+  /** Current menu phase. One of {@link #PHASE_IDLE}, {@link #PHASE_OPENING} or {@link #PHASE_ACTIVE}. */
+  public final int phase;
 
-  /** Alias of {@link #IDLE}. */
-  public static final DiscMenuState EMPTY = IDLE;
-
-  public final @Availability int availability;
-  public final @Phase int phase;
+  /** Whether navigation driven playback is currently ongoing, e.g. inside a menu or a still. */
   public final boolean navigationPlaybackOngoing;
 
-  public DiscMenuState(
-      @Availability int availability, @Phase int phase, boolean navigationPlaybackOngoing) {
+  public DiscMenuState(int availability, int phase, boolean navigationPlaybackOngoing) {
     this.availability = availability;
     this.phase = phase;
     this.navigationPlaybackOngoing = navigationPlaybackOngoing;
   }
 
   @Override
-  public boolean equals(Object obj) {
-    if (this == obj) return true;
-    if (!(obj instanceof DiscMenuState)) return false;
-    DiscMenuState other = (DiscMenuState) obj;
-    return availability == other.availability
-        && phase == other.phase
-        && navigationPlaybackOngoing == other.navigationPlaybackOngoing;
+  public boolean equals(@Nullable Object o) {
+    if (this == o) {
+      return true;
+    }
+    if (!(o instanceof DiscMenuState)) {
+      return false;
+    }
+    DiscMenuState that = (DiscMenuState) o;
+    return availability == that.availability
+        && phase == that.phase
+        && navigationPlaybackOngoing == that.navigationPlaybackOngoing;
   }
 
   @Override
   public int hashCode() {
-    int result = availability;
-    result = 31 * result + phase;
-    result = 31 * result + (navigationPlaybackOngoing ? 1 : 0);
-    return result;
+    return Objects.hash(availability, phase, navigationPlaybackOngoing);
   }
 
   @Override
@@ -79,6 +90,6 @@ public final class DiscMenuState {
         + phase
         + ", navigationPlaybackOngoing="
         + navigationPlaybackOngoing
-        + '}';
+        + "}";
   }
 }
