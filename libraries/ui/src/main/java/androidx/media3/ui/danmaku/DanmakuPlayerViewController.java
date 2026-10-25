@@ -1,106 +1,144 @@
+/*
+ * Copyright (C) 2026 The Android Open Source Project
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 package androidx.media3.ui.danmaku;
 
-import android.content.Context;
 import android.net.Uri;
+import android.view.View;
 import android.view.ViewGroup;
+import android.widget.FrameLayout;
 import androidx.annotation.Nullable;
 import androidx.media3.common.Player;
 import androidx.media3.common.util.UnstableApi;
+import androidx.media3.ui.AspectRatioFrameLayout;
 import androidx.media3.ui.PlayerView;
 import okhttp3.OkHttpClient;
 
 /**
- * Player-view facing danmaku controller: hosts a {@link DanmakuView} inside a {@link PlayerView}'s
- * overlay frame and delegates playback, data source and configuration to a {@link
- * DanmakuController}.
+ * Binds danmaku rendering to a {@link PlayerView}: it hosts a {@link DanmakuView} inside the
+ * player view, keeps it attached to the current player and exposes the playback-facing controls
+ * (data source, configuration, enable state and live sending).
  */
 @UnstableApi
 public final class DanmakuPlayerViewController {
 
-  private final DanmakuController controller;
-  private final DanmakuView danmakuView;
-  private final java.util.List<Danmaku> items = new java.util.concurrent.CopyOnWriteArrayList<>();
-
   @Nullable private PlayerView playerView;
-  private boolean enabled = true;
+  @Nullable private DanmakuView danmakuView;
+  private final DanmakuController controller;
 
+  @Nullable private String dataSource;
+  private boolean enabled;
+  private DanmakuConfig config = DanmakuConfig.DEFAULT;
+
+  /** Creates a controller. Call {@link #bind(PlayerView)} to attach it to a player view. */
   public DanmakuPlayerViewController() {
     this.controller = new DanmakuController();
-    this.danmakuView = new DanmakuView(null);
-    controller.setView(danmakuView);
   }
 
-  /** Replaces the danmaku items shown in the view. */
-  public void setItems(java.util.List<Danmaku> newItems) {
-    items.clear();
-    items.addAll(newItems);
-    controller.setItems(new java.util.ArrayList<>(newItems));
-  }
-
-  /** Returns the danmaku items last set on this controller. */
-  public java.util.List<Danmaku> getItems() {
-    return java.util.Collections.unmodifiableList(items);
-  }
-
-  /** Attaches the danmaku view to the given player view's overlay frame. */
+  /** Attaches the danmaku view to {@code playerView} and follows its player. */
   public void bind(PlayerView playerView) {
     this.playerView = playerView;
-    ViewGroup overlay = playerView.getOverlayFrameLayout();
-    if (overlay == null) return;
-    if (danmakuView.getParent() instanceof ViewGroup && danmakuView.getParent() != overlay) {
-      ((ViewGroup) danmakuView.getParent()).removeView(danmakuView);
-    }
-    if (danmakuView.getParent() == null) {
-      danmakuView.setLayoutParams(
-          new ViewGroup.LayoutParams(
-              ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-      overlay.addView(danmakuView);
+    if (danmakuView == null) {
+      danmakuView = new DanmakuView(playerView.getContext());
+      addDanmakuView(playerView, danmakuView);
+      controller.setView(danmakuView);
     }
     Player player = playerView.getPlayer();
-    if (player != null) controller.setPlayer(player);
-    applyEnabled();
+    controller.setPlayer(player);
+    controller.setEnabled(enabled);
+    controller.setConfig(config);
+    controller.setDataSource(dataSource == null ? null : Uri.parse(dataSource));
+  }
+
+  /** Returns the currently loaded items, ordered by time. */
+  public java.util.List<Danmaku> getItems() {
+    return controller.getItems();
   }
 
   /** Sets the HTTP client used to fetch danmaku sources. */
-  public void setOkHttpClient(@Nullable OkHttpClient okHttpClient) {
-    controller.setOkHttpClient(okHttpClient);
+  public void setOkHttpClient(@Nullable OkHttpClient client) {
+    controller.setOkHttpClient(client);
   }
 
-  /** Enables or disables danmaku rendering. */
+  /** Sets whether danmaku rendering is enabled. */
   public void setEnabled(boolean enabled) {
     this.enabled = enabled;
-    applyEnabled();
+    controller.setEnabled(enabled);
   }
 
-  /** Applies the given danmaku configuration. */
+  /** Sets the rendering configuration. */
   public void setConfig(DanmakuConfig config) {
-    controller.setConfig(config);
+    this.config = config == null ? DanmakuConfig.DEFAULT : config;
+    controller.setConfig(this.config);
   }
 
-  /** Sets the danmaku source URI, or {@code null} to clear it. */
-  public void setDataSource(@Nullable Uri uri) {
-    controller.setDataSource(uri);
+  /**
+   * Sets the danmaku source URI, or {@code null} to detach the current source.
+   *
+   * @param dataSource The source URI, or {@code null}.
+   */
+  public void setDataSource(@Nullable String dataSource) {
+    this.dataSource = dataSource;
+    controller.setDataSource(dataSource == null ? null : Uri.parse(dataSource));
   }
 
-  /** Posts a user-sent danmaku immediately. */
-  public void sendNow(String text) {
-    controller.sendNow(text);
+  /**
+   * Sets the danmaku source URI, or {@code null} to detach the current source.
+   *
+   * @param dataSource The source URI, or {@code null}.
+   */
+  public void setDataSource(@Nullable Uri dataSource) {
+    setDataSource(dataSource == null ? null : dataSource.toString());
   }
 
-  /** Emits a danmaku (for example a live message) into the running view. */
+  /** Posts a danmaku to be displayed immediately on the next playback frame. */
   public void post(Danmaku danmaku) {
     controller.sendNow(danmaku);
   }
 
-  /** Releases the controller and detaches the view. */
+  /** Sends a danmaku at the current playback position. */
+  public void sendNow(String text) {
+    controller.sendNow(text);
+  }
+
+  /** Detaches the danmaku view from the player view and releases its resources. */
   public void close() {
-    if (danmakuView.getParent() instanceof ViewGroup) {
-      ((ViewGroup) danmakuView.getParent()).removeView(danmakuView);
+    controller.setEnabled(false);
+    controller.setPlayer(null);
+    controller.setView(null);
+    if (danmakuView != null) {
+      danmakuView.release();
+      if (danmakuView.getParent() instanceof ViewGroup) {
+        ((ViewGroup) danmakuView.getParent()).removeView(danmakuView);
+      }
+      danmakuView = null;
     }
     playerView = null;
   }
 
-  private void applyEnabled() {
-    controller.setEnabled(enabled && playerView != null);
+  private static void addDanmakuView(PlayerView playerView, DanmakuView view) {
+    ViewGroup.LayoutParams params =
+        new FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT);
+    int insertIndex = 0;
+    for (int i = 0; i < playerView.getChildCount(); i++) {
+      if (playerView.getChildAt(i) instanceof AspectRatioFrameLayout) {
+        insertIndex = i + 1;
+        break;
+      }
+    }
+    playerView.addView(view, insertIndex, params);
   }
 }
