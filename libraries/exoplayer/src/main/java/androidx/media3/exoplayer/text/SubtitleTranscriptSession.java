@@ -1,157 +1,322 @@
+/*
+ * Copyright (C) 2026 The Android Open Source Project
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 package androidx.media3.exoplayer.text;
 
-import android.net.Uri;
 import androidx.annotation.Nullable;
+import androidx.media3.common.C;
 import androidx.media3.common.Format;
 import androidx.media3.common.MediaItem;
+import androidx.media3.common.Player;
+import androidx.media3.common.Timeline;
 import androidx.media3.common.text.SubtitleContent;
+import com.google.common.collect.ImmutableList;
+import androidx.media3.common.util.Log;
 import androidx.media3.common.util.UnstableApi;
-import androidx.media3.mpvplayer.MpvSubtitleContentLoader;
+
 import java.io.IOException;
+import java.io.InterruptedIOException;
 import java.util.HashMap;
-import java.util.List;
+import java.util.HashSet;
+import java.util.Iterator;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 
 /**
- * Loads and caches subtitle transcripts for the current media item. External subtitle files are
- * fetched through the {@link MpvSubtitleContentLoader} supplied by the app; embedded tracks have
- * no file to load and report {@link SubtitleContent#UNSUPPORTED}.
+ * Manages the {@linkplain SubtitleTranscript transcripts} of the media items played by a player.
+ *
+ * <p>The session keeps one {@link SubtitleTranscript} per media item, loads the content of
+ * sideloaded subtitle tracks through a {@link SubtitleContentLoader} and exposes the content of
+ * the currently selected tracks.
  */
 @UnstableApi
-public final class SubtitleTranscriptSession {
+public final class SubtitleTranscriptSession implements Player.Listener, AutoCloseable {
 
-  private final ExecutorService executor;
-  private final Map<String, SubtitleContent> cache = new HashMap<>();
-  private final Map<String, Boolean> retryable = new HashMap<>();
+  private static final String TAG = "SubtitleTranscriptSession";
 
-  @Nullable private MpvSubtitleContentLoader loader;
-  @Nullable private androidx.media3.common.Player player;
+  private final HashMap<MediaItem, SubtitleTranscript> transcripts;
+  private final HashSet<MediaItem> retainedMediaItems;
+  private final HashMap<Format, Future<?>> pendingLoads;
+  @Nullable private SubtitleContentLoader loader;
+  @Nullable private Player player;
   @Nullable private MediaItem preloadMediaItem;
-  private boolean contentEnabled = true;
+  @Nullable private ExecutorService executorService;
+  private boolean contentEnabled;
+  private boolean closed;
 
+  /** Creates a session. */
   public SubtitleTranscriptSession() {
-    this.executor = Executors.newSingleThreadExecutor(runnable -> {
-      Thread thread = new Thread(runnable, "SubtitleTranscript");
-      thread.setDaemon(true);
-      return thread;
-    });
+    transcripts = new HashMap<>();
+    retainedMediaItems = new HashSet<>();
+    pendingLoads = new HashMap<>();
   }
 
-  /** Sets the loader used to fetch external subtitle files. */
-  public void setLoader(MpvSubtitleContentLoader loader) {
+  /** Sets the loader used to load the content of sideloaded subtitle tracks. */
+  public synchronized void setLoader(@Nullable SubtitleContentLoader loader) {
+    cancelPendingLoads();
     this.loader = loader;
   }
 
-  /** Sets the player whose media items are inspected for external subtitles. */
-  public void setPlayer(@Nullable androidx.media3.common.Player player) {
+  /** Sets the player whose media items are tracked. */
+  public synchronized void setPlayer(@Nullable Player player) {
+    if (closed || this.player == player) {
+      return;
+    }
+    if (this.player != null) {
+      this.player.removeListener(this);
+    }
     this.player = player;
-  }
-
-  /** Records the media item about to be preloaded. */
-  public void setPreloadMediaItem(@Nullable MediaItem mediaItem) {
-    this.preloadMediaItem = mediaItem;
-  }
-
-  /** Returns the transcript handle for the given media item. */
-  public SubtitleTranscript forMediaItem(MediaItem mediaItem) {
-    return new SubtitleTranscript(mediaItem);
-  }
-
-  /** Enables or disables transcript retrieval. */
-  public void setContentEnabled(boolean enabled) {
-    this.contentEnabled = enabled;
+    if (player != null) {
+      player.addListener(this);
+      onTimelineChanged(player.getCurrentTimeline(), /* reason= */ 0);
+    }
   }
 
   /**
-   * Returns the transcript content for the given subtitle format. The first call for a format
-   * kicks off an asynchronous load and reports {@link SubtitleContent#LOADING}.
+   * Returns the transcript of the given media item, creating it if necessary.
+   *
+   * @param mediaItem The media item.
+   * @return The transcript of the media item.
+   * @throws IllegalStateException If the session is closed.
    */
-  public SubtitleContent getContent(Format format, long offsetMs) {
-    if (!contentEnabled || loader == null || player == null) return SubtitleContent.UNSUPPORTED;
-    String key = keyOf(format);
-    SubtitleContent cached = cache.get(key);
-    if (cached != null) return cached;
+  public synchronized SubtitleTranscript forMediaItem(MediaItem mediaItem) {
+    if (closed) {
+      throw new IllegalStateException("Session is closed");
+    }
+    if (!retainedMediaItems.contains(mediaItem) && !mediaItem.equals(getCurrentMediaItem())) {
+      retainedMediaItems.add(mediaItem);
+    }
+    @Nullable SubtitleTranscript transcript = transcripts.get(mediaItem);
+    if (transcript == null) {
+      transcript = new SubtitleTranscript(mediaItem);
+      transcripts.put(mediaItem, transcript);
+    }
+    return transcript;
+  }
+
+  /** Sets the media item that is being preloaded and whose transcript should be retained. */
+  public synchronized void setPreloadMediaItem(@Nullable MediaItem mediaItem) {
+    preloadMediaItem = mediaItem;
+    if (mediaItem != null) {
+      retainedMediaItems.remove(mediaItem);
+      forMediaItem(mediaItem);
+    }
+    evict();
+  }
+
+  /**
+   * Returns the content of the subtitle track selected by the given format.
+   *
+   * @param format The format of the selected subtitle track.
+   * @param offsetMs The offset applied to the content entry times, in milliseconds.
+   * @return The content of the track, or a {@link SubtitleContent} with the corresponding pending
+   *     state if the content is not (yet) available.
+   */
+  public synchronized SubtitleContent getContent(Format format, long offsetMs) {
+    @Nullable Player player = this.player;
+    @Nullable SubtitleTranscript transcript =
+        player == null ? null : transcripts.get(player.getCurrentMediaItem());
+    if (player == null || transcript == null || closed) {
+      return new SubtitleContent(
+          SubtitleContent.State.LOADING, ImmutableList.of(), /* truncated= */ false);
+    }
+    ensureExternalContentLoaded(player.getCurrentMediaItem(), transcript, format);
+    return transcript.getContent(format, C.msToUs(offsetMs), C.TIME_UNSET);
+  }
+
+  /** Sets whether subtitle content should be loaded and provided. */
+  public synchronized void setContentEnabled(boolean enabled) {
+    if (contentEnabled == enabled) {
+      return;
+    }
+    contentEnabled = enabled;
+    if (!enabled) {
+      cancelPendingLoads();
+    }
+  }
+
+  /** Returns whether loading the content of the track can be retried. */
+  public synchronized boolean canRetryContent(Format format) {
+    if (closed) {
+      return false;
+    }
+    @Nullable Player player = this.player;
+    @Nullable SubtitleTranscript transcript =
+        player == null ? null : transcripts.get(player.getCurrentMediaItem());
+    if (transcript == null) {
+      return false;
+    }
     MediaItem mediaItem = player.getCurrentMediaItem();
-    if (mediaItem == null) mediaItem = preloadMediaItem;
-    Uri uri = findSubtitleUri(mediaItem, format);
-    if (mediaItem == null || uri == null) {
-      cache.put(key, SubtitleContent.UNSUPPORTED);
-      retryable.put(key, Boolean.FALSE);
-      return SubtitleContent.UNSUPPORTED;
+    return mediaItem != null
+        && transcript.getExternalTrackConfiguration(format) != null
+        && transcript.getContent(format).state == SubtitleContent.State.ERROR;
+  }
+
+  /** Retries loading the content of the track. */
+  public synchronized void retryContent(Format format) {
+    if (closed) {
+      return;
     }
+    @Nullable Player player = this.player;
+    if (player == null) {
+      return;
+    }
+    @Nullable SubtitleTranscript transcript = transcripts.get(player.getCurrentMediaItem());
+    if (transcript == null) {
+      return;
+    }
+    @Nullable Future<?> pendingLoad = pendingLoads.remove(format);
+    if (pendingLoad != null) {
+      pendingLoad.cancel(/* mayInterruptIfRunning= */ true);
+    }
+    transcript.removeExternalContentLoaded(format);
+    ensureExternalContentLoaded(player.getCurrentMediaItem(), transcript, format);
+  }
+
+  @Override
+  public synchronized void onTimelineChanged(Timeline timeline, @Player.TimelineChangeReason int reason) {
+    evict();
+  }
+
+  @Override
+  public synchronized void onMediaItemTransition(
+      @Nullable MediaItem mediaItem, @Player.MediaItemTransitionReason int reason) {
+    evict();
+  }
+
+  @Override
+  public synchronized void close() {
+    if (closed) {
+      return;
+    }
+    closed = true;
+    cancelPendingLoads();
+    shutdownExecutor();
+    transcripts.clear();
+    retainedMediaItems.clear();
+    if (player != null) {
+      player.removeListener(this);
+      player = null;
+    }
+    preloadMediaItem = null;
+  }
+
+  private void ensureExternalContentLoaded(
+      @Nullable MediaItem mediaItem, SubtitleTranscript transcript, Format format) {
+    if (loader == null || !contentEnabled || mediaItem == null) {
+      return;
+    }
+    @Nullable MediaItem.SubtitleConfiguration configuration =
+        transcript.getExternalTrackConfiguration(format);
+    if (configuration == null || transcript.isExternalContentLoaded(format)) {
+      return;
+    }
+    transcript.setExternalContentLoaded(format);
+    transcript.setState(format, SubtitleContent.State.LOADING);
+    ExecutorService executorService = getOrCreateExecutor();
     MediaItem item = mediaItem;
-    cache.put(key, SubtitleContent.LOADING);
-    retryable.put(key, Boolean.FALSE);
-    executor.execute(() -> load(item, uri, format, key));
-    return SubtitleContent.LOADING;
-  }
-
-  /** Returns whether a previously failed load can be retried for the given format. */
-  public boolean canRetryContent(Format format) {
-    return retryable.getOrDefault(keyOf(format), Boolean.FALSE);
-  }
-
-  /** Retries a previously failed load. */
-  public void retryContent(Format format) {
-    String key = keyOf(format);
-    if (!Boolean.TRUE.equals(retryable.get(key))) return;
-    cache.remove(key);
-    retryable.remove(key);
-  }
-
-  /** Releases the session and drops all cached transcripts. */
-  public void close() {
-    cache.clear();
-    retryable.clear();
-    executor.shutdownNow();
-  }
-
-  private void load(MediaItem item, Uri uri, Format format, String key) {
-    try {
-      SubtitleContent content = loader.load(item, uri, format);
-      synchronized (cache) {
-        cache.put(key, content);
-        retryable.put(key, content.state == SubtitleContent.State.ERROR ? Boolean.TRUE : Boolean.FALSE);
-      }
-    } catch (IOException error) {
-      synchronized (cache) {
-        cache.put(key, new SubtitleContent(SubtitleContent.State.ERROR));
-        retryable.put(key, Boolean.TRUE);
-      }
-    } catch (RuntimeException error) {
-      synchronized (cache) {
-        cache.put(key, new SubtitleContent(SubtitleContent.State.ERROR));
-        retryable.put(key, Boolean.TRUE);
-      }
-    }
+    MediaItem.SubtitleConfiguration subtitleConfiguration = configuration;
+    SubtitleContentLoader contentLoader = loader;
+    pendingLoads.put(
+        format,
+        executorService.submit(
+            () -> {
+              try {
+                SubtitleContent content =
+                    contentLoader.load(item, subtitleConfiguration.uri, format);
+                synchronized (SubtitleTranscriptSession.this) {
+                  if (!closed) {
+                    transcript.setContent(format, content);
+                    pendingLoads.remove(format);
+                  }
+                }
+              } catch (InterruptedIOException e) {
+                // Load was cancelled. Keep the track pending so it can be retried.
+              } catch (IOException e) {
+                Log.w(TAG, "Unable to load subtitle content", e);
+                synchronized (SubtitleTranscriptSession.this) {
+                  if (!closed) {
+                    transcript.markExternalTrackErrored(subtitleConfiguration.uri);
+                    pendingLoads.remove(format);
+                  }
+                }
+              } catch (RuntimeException e) {
+                Log.w(TAG, "Unable to load subtitle content", e);
+                synchronized (SubtitleTranscriptSession.this) {
+                  if (!closed) {
+                    transcript.markExternalTrackErrored(subtitleConfiguration.uri);
+                    pendingLoads.remove(format);
+                  }
+                }
+              }
+            }));
   }
 
   @Nullable
-  private static Uri findSubtitleUri(@Nullable MediaItem mediaItem, Format format) {
-    if (mediaItem == null || mediaItem.localConfiguration == null) return null;
-    List<MediaItem.SubtitleConfiguration> configurations =
-        mediaItem.localConfiguration.subtitleConfigurations;
-    if (configurations == null || configurations.isEmpty()) return null;
-    for (MediaItem.SubtitleConfiguration configuration : configurations) {
-      if (matches(configuration, format)) return configuration.uri;
+  private MediaItem getCurrentMediaItem() {
+    return player == null ? null : player.getCurrentMediaItem();
+  }
+
+  private void evict() {
+    @Nullable MediaItem currentMediaItem = getCurrentMediaItem();
+    retainedMediaItems.clear();
+    if (currentMediaItem != null && player != null) {
+      Timeline timeline = player.getCurrentTimeline();
+      for (int i = 0; i < timeline.getWindowCount(); i++) {
+        Timeline.Window window = new Timeline.Window();
+        timeline.getWindow(i, window);
+        if (window.mediaItem != null) {
+          retainedMediaItems.add(window.mediaItem);
+        }
+      }
+      retainedMediaItems.add(currentMediaItem);
     }
-    return null;
+    if (preloadMediaItem != null) {
+      retainedMediaItems.add(preloadMediaItem);
+    }
+    Iterator<Map.Entry<MediaItem, SubtitleTranscript>> iterator =
+        transcripts.entrySet().iterator();
+    while (iterator.hasNext()) {
+      Map.Entry<MediaItem, SubtitleTranscript> entry = iterator.next();
+      if (!retainedMediaItems.contains(entry.getKey())) {
+        entry.getValue().clear();
+        iterator.remove();
+      }
+    }
   }
 
-  private static boolean matches(MediaItem.SubtitleConfiguration configuration, Format format) {
-    if (configuration.id != null && format.id != null) return configuration.id.equals(format.id);
-    if (configuration.mimeType != null
-        && format.sampleMimeType != null
-        && !configuration.mimeType.equals(format.sampleMimeType)) return false;
-    if (configuration.language != null
-        && format.language != null
-        && !configuration.language.equals(format.language)) return false;
-    return true;
+  private void cancelPendingLoads() {
+    for (Future<?> pendingLoad : pendingLoads.values()) {
+      pendingLoad.cancel(/* mayInterruptIfRunning= */ true);
+    }
+    pendingLoads.clear();
   }
 
-  private static String keyOf(Format format) {
-    return format.id + "|" + format.language + "|" + format.sampleMimeType;
+  private ExecutorService getOrCreateExecutor() {
+    if (executorService == null) {
+      executorService = Executors.newCachedThreadPool();
+    }
+    return executorService;
+  }
+
+  private void shutdownExecutor() {
+    if (executorService != null) {
+      executorService.shutdownNow();
+      executorService = null;
+    }
   }
 }

@@ -1,192 +1,183 @@
+/*
+ * Copyright (C) 2026 The Android Open Source Project
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 package androidx.media3.exoplayer.text;
 
 import android.net.Uri;
+import androidx.annotation.Nullable;
 import androidx.media3.common.C;
 import androidx.media3.common.Format;
 import androidx.media3.common.MediaItem;
 import androidx.media3.common.MimeTypes;
+import androidx.media3.common.text.Cue;
 import androidx.media3.common.text.SubtitleContent;
 import androidx.media3.common.util.UnstableApi;
 import androidx.media3.datasource.DataSource;
 import androidx.media3.datasource.DataSpec;
+import androidx.media3.extractor.text.CuesWithTiming;
+import androidx.media3.extractor.text.DefaultSubtitleParserFactory;
+import androidx.media3.extractor.text.SubtitleParser;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
-import java.io.InputStream;
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Comparator;
 import java.util.List;
-import java.util.Locale;
 
 /**
- * Loads an external subtitle file over a {@link DataSource} and converts it into a {@link
- * SubtitleContent} transcript. SRT, WebVTT and ASS/SSA text tracks are supported; other formats
- * report {@link SubtitleContent#UNSUPPORTED}.
+ * Loads a subtitle file through a {@link DataSource} and decodes it into a {@link SubtitleContent}.
  */
 @UnstableApi
 public final class DefaultSubtitleContentLoader {
 
-  private static final int MAX_BYTES = 8 * 1024 * 1024;
+  private static final int MAX_FILE_BYTES = 32 * 1024 * 1024;
 
   private final DataSource.Factory dataSourceFactory;
 
+  /**
+   * Creates an instance.
+   *
+   * @param dataSourceFactory The {@link DataSource.Factory} used to read the subtitle file.
+   */
   public DefaultSubtitleContentLoader(DataSource.Factory dataSourceFactory) {
     this.dataSourceFactory = dataSourceFactory;
   }
 
-  /** Loads and parses the subtitle at {@code uri}. */
-  public SubtitleContent load(MediaItem item, Uri uri, Format format) throws IOException {
-    byte[] bytes = read(uri);
-    String body = new String(bytes, StandardCharsets.UTF_8);
-    if (body.startsWith("\uFEFF")) body = body.substring(1);
-    List<SubtitleContent.Entry> entries = parse(body, mimeTypeOf(uri, format));
-    if (entries == null) return SubtitleContent.UNSUPPORTED;
-    return new SubtitleContent(SubtitleContent.State.COMPLETE, entries);
+  /**
+   * Loads and decodes the subtitle file at {@code uri}.
+   *
+   * @param mediaItem The media item the subtitle track belongs to.
+   * @param uri The uri of the subtitle file.
+   * @param format The format of the subtitle track.
+   * @return The decoded {@link SubtitleContent}, or {@link SubtitleContent#UNSUPPORTED} if the
+   *     format is not supported.
+   * @throws IOException If the subtitle file could not be read.
+   */
+  public SubtitleContent load(MediaItem mediaItem, Uri uri, Format format) throws IOException {
+    @Nullable Format parseFormat = resolveParseFormat(format, uri);
+    if (parseFormat == null) {
+      return SubtitleContent.UNSUPPORTED;
+    }
+    DefaultSubtitleParserFactory parserFactory = new DefaultSubtitleParserFactory();
+    if (!parserFactory.supportsFormat(parseFormat)) {
+      return SubtitleContent.UNSUPPORTED;
+    }
+    byte[] data = read(uri);
+    SubtitleParser parser = parserFactory.create(parseFormat);
+    List<SubtitleContent.Entry> entries = new ArrayList<>();
+    boolean parseFailed = false;
+    try {
+      parser.parse(
+          data,
+          /* offset= */ 0,
+          data.length,
+          SubtitleParser.OutputOptions.allCues(),
+          cuesWithTiming -> addEntries(entries, cuesWithTiming));
+    } catch (RuntimeException e) {
+      if (entries.isEmpty()) {
+        throw new IOException("Unable to decode subtitle file", e);
+      }
+      parseFailed = true;
+    }
+    sortEntries(entries);
+    SubtitleContent.State state =
+        parseFailed ? SubtitleContent.State.PARTIAL : SubtitleContent.State.COMPLETE;
+    return new SubtitleContent(state, entries, /* truncated= */ false);
+  }
+
+  @Nullable
+  private static Format resolveParseFormat(Format format, Uri uri) {
+    if (format.sampleMimeType != null) {
+      return format;
+    }
+    @Nullable String mimeType = inferMimeTypeFromExtension(uri);
+    return mimeType == null ? null : format.buildUpon().setSampleMimeType(mimeType).build();
+  }
+
+  @Nullable
+  private static String inferMimeTypeFromExtension(Uri uri) {
+    @Nullable String fileName = uri.getLastPathSegment();
+    if (fileName == null) {
+      return null;
+    }
+    String lowerCase = fileName.toLowerCase();
+    if (lowerCase.endsWith(".vtt")) {
+      return MimeTypes.TEXT_VTT;
+    }
+    if (lowerCase.endsWith(".srt")) {
+      return MimeTypes.APPLICATION_SUBRIP;
+    }
+    if (lowerCase.endsWith(".ssa") || lowerCase.endsWith(".ass")) {
+      return MimeTypes.TEXT_SSA;
+    }
+    if (lowerCase.endsWith(".ttml") || lowerCase.endsWith(".xml") || lowerCase.endsWith(".dfxp")) {
+      return MimeTypes.APPLICATION_TTML;
+    }
+    return null;
+  }
+
+  private static void addEntries(List<SubtitleContent.Entry> entries, CuesWithTiming cues) {
+    long startTimeUs = cues.startTimeUs == C.TIME_UNSET ? 0 : cues.startTimeUs;
+    long endTimeUs =
+        cues.durationUs == C.TIME_UNSET || cues.durationUs == Long.MAX_VALUE
+            ? C.TIME_UNSET
+            : startTimeUs + cues.durationUs;
+    for (int i = 0; i < cues.cues.size(); i++) {
+      entries.add(createEntry(startTimeUs, endTimeUs, cues.cues.get(i)));
+    }
+  }
+
+  private static SubtitleContent.Entry createEntry(long startTimeUs, long endTimeUs, Cue cue) {
+    CharSequence text = cue.text;
+    boolean image = text == null && cue.bitmap != null;
+    return new SubtitleContent.Entry(
+        startTimeUs, endTimeUs, text == null ? "" : text.toString().trim(), image);
+  }
+
+  private static void sortEntries(List<SubtitleContent.Entry> entries) {
+    Collections.sort(
+        entries,
+        new Comparator<SubtitleContent.Entry>() {
+          @Override
+          public int compare(SubtitleContent.Entry first, SubtitleContent.Entry second) {
+            return Long.compare(first.startTimeUs, second.startTimeUs);
+          }
+        });
   }
 
   private byte[] read(Uri uri) throws IOException {
+    DataSpec dataSpec =
+        new DataSpec.Builder().setUri(uri).setLength(C.LENGTH_UNSET).build();
     DataSource dataSource = dataSourceFactory.createDataSource();
-    dataSource.open(new DataSpec(uri));
-    try (InputStream stream = new DataSourceInputStream(dataSource)) {
-      ByteArrayOutputStream buffer = new ByteArrayOutputStream(1 << 15);
-      byte[] chunk = new byte[8192];
-      int read;
-      while ((read = stream.read(chunk)) > 0) {
-        if (buffer.size() + read > MAX_BYTES) throw new IOException("Subtitle too large");
-        buffer.write(chunk, 0, read);
-      }
-      return buffer.toByteArray();
-    } finally {
-      dataSource.close();
-    }
-  }
-
-  private static @androidx.annotation.Nullable String mimeTypeOf(Uri uri, Format format) {
-    String mime = format == null ? null : format.sampleMimeType;
-    if (mime != null) return mime;
-    String path = uri.getPath() == null ? "" : uri.getPath().toLowerCase(Locale.US);
-    if (path.endsWith(".vtt")) return MimeTypes.TEXT_VTT;
-    if (path.endsWith(".ass") || path.endsWith(".ssa")) return MimeTypes.TEXT_SSA;
-    if (path.endsWith(".ttml") || path.endsWith(".xml") || path.endsWith(".dfxp")) {
-      return MimeTypes.APPLICATION_TTML;
-    }
-    return MimeTypes.APPLICATION_SUBRIP;
-  }
-
-  private static @androidx.annotation.Nullable List<SubtitleContent.Entry> parse(
-      String body, String mimeType) {
-    if (MimeTypes.APPLICATION_TTML.equals(mimeType)) return null;
-    if (MimeTypes.TEXT_SSA.equals(mimeType)) return parseAss(body);
-    if (MimeTypes.TEXT_VTT.equals(mimeType)) return parseCueBased(body, ".");
-    return parseCueBased(body, ",");
-  }
-
-  private static List<SubtitleContent.Entry> parseCueBased(String body, String msSeparator) {
-    List<SubtitleContent.Entry> entries = new ArrayList<>();
-    String[] blocks = body.replace("\r\n", "\n").replace("\r", "\n").split("\n\\s*\\n");
-    for (String block : blocks) {
-      String[] lines = block.trim().split("\n");
-      int timingLine = -1;
-      for (int i = 0; i < lines.length; i++) {
-        if (lines[i].contains("-->")) {
-          timingLine = i;
+    try {
+      dataSource.open(dataSpec);
+      ByteArrayOutputStream output = new ByteArrayOutputStream();
+      byte[] buffer = new byte[64 * 1024];
+      while (true) {
+        int read = dataSource.read(buffer, /* offset= */ 0, buffer.length);
+        if (read == C.RESULT_END_OF_INPUT) {
           break;
         }
-      }
-      if (timingLine < 0 || timingLine + 1 >= lines.length) continue;
-      long[] times = parseTiming(lines[timingLine], msSeparator);
-      if (times == null) continue;
-      StringBuilder text = new StringBuilder();
-      for (int i = timingLine + 1; i < lines.length; i++) {
-        if (text.length() > 0) text.append('\n');
-        text.append(stripTags(lines[i]));
-      }
-      String value = text.toString().trim();
-      if (value.isEmpty()) continue;
-      entries.add(new SubtitleContent.Entry(times[0], times[1], value, false));
-    }
-    return entries;
-  }
-
-  private static List<SubtitleContent.Entry> parseAss(String body) {
-    List<SubtitleContent.Entry> entries = new ArrayList<>();
-    for (String line : body.replace("\r\n", "\n").replace("\r", "\n").split("\n")) {
-      if (!line.startsWith("Dialogue:")) continue;
-      String[] parts = line.substring("Dialogue:".length()).trim().split(",", 10);
-      if (parts.length < 10) continue;
-      long start = parseAssClock(parts[1]);
-      long end = parseAssClock(parts[2]);
-      if (start == C.TIME_UNSET || end == C.TIME_UNSET) continue;
-      String text = parts[9].replace("\\N", "\n").replace("\\n", "\n").replaceAll("\\{[^}]*}", "").trim();
-      if (text.isEmpty()) continue;
-      entries.add(new SubtitleContent.Entry(start, end, text, false));
-    }
-    return entries;
-  }
-
-  private static long[] parseTiming(String line, String msSeparator) {
-    int arrow = line.indexOf("-->");
-    if (arrow < 0) return null;
-    long start = parseClock(line.substring(0, arrow).trim(), msSeparator);
-    String rest = line.substring(arrow + 3).trim();
-    int space = rest.indexOf(' ');
-    long end = parseClock(space < 0 ? rest : rest.substring(0, space), msSeparator);
-    if (start == C.TIME_UNSET || end == C.TIME_UNSET) return null;
-    return new long[] {start, end};
-  }
-
-  private static long parseClock(String clock, String msSeparator) {
-    try {
-      String[] split = clock.split(":");
-      if (split.length < 2) return C.TIME_UNSET;
-      double seconds = Double.parseDouble(split[split.length - 1].replace(msSeparator, "."));
-      long minutes = Long.parseLong(split[split.length - 2].trim());
-      long hours = split.length >= 3 ? Long.parseLong(split[split.length - 3].trim()) : 0;
-      return (long) (((hours * 60 + minutes) * 60 + seconds) * 1_000_000);
-    } catch (NumberFormatException error) {
-      return C.TIME_UNSET;
-    }
-  }
-
-  private static long parseAssClock(String clock) {
-    return parseClock(clock.trim(), ".");
-  }
-
-  private static String stripTags(String line) {
-    return line.replaceAll("<[^>]*>", "").trim();
-  }
-
-  private static final class DataSourceInputStream extends InputStream {
-
-    private final DataSource dataSource;
-    private boolean opened;
-
-    private DataSourceInputStream(DataSource dataSource) {
-      this.dataSource = dataSource;
-      this.opened = true;
-    }
-
-    @Override
-    public int read() throws IOException {
-      byte[] single = new byte[1];
-      int read = dataSource.read(single, 0, 1);
-      return read < 0 ? -1 : (single[0] & 0xFF);
-    }
-
-    @Override
-    public int read(byte[] buffer, int offset, int length) throws IOException {
-      return dataSource.read(buffer, offset, length);
-    }
-
-    @Override
-    public void close() {
-      if (opened) {
-        opened = false;
-        try {
-          dataSource.close();
-        } catch (IOException error) {
-          // Closing twice or after a broken connection is not fatal here.
+        if (output.size() + read > MAX_FILE_BYTES) {
+          throw new IOException("Subtitle file exceeds the size limit");
         }
+        output.write(buffer, /* off= */ 0, read);
       }
+      return output.toByteArray();
+    } finally {
+      dataSource.close();
     }
   }
 }
